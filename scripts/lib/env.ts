@@ -10,7 +10,8 @@ export const RH_CHAIN_ID = Number(process.env.RH_CHAIN_ID ?? 4663);
 export const BLOCKSCOUT = process.env.RH_BLOCKSCOUT ?? "https://robinhoodchain.blockscout.com";
 
 export function loadPairs(): PairsFile {
-  return JSON.parse(readFileSync(join(ROOT, "config", "pairs.json"), "utf8")) as PairsFile;
+  const p = process.env.PAIRS_PATH ?? join(ROOT, "config", "pairs.json");
+  return JSON.parse(readFileSync(p, "utf8")) as PairsFile;
 }
 export function arg(name: string, def?: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);

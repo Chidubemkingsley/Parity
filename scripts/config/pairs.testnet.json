@@ -1,0 +1,9 @@
+{
+  "_note": "TESTNET plumbing: mock mTSLA/mUSDG V4 pool on Robinhood testnet (46630) vs xyz:TSLA perp on Hyperliquid testnet. Prices are mock-anchored; basis numbers are plumbing checks, not strategy signal.",
+  "hlDex": "xyz",
+  "quoteToken": { "symbol": "mUSDG", "address": "0xac0a7216290fa7445782f80628bf727b084e41e0", "decimals": 6 },
+  "pairs": [
+    { "symbol": "mTSLA", "hlCoin": "xyz:TSLA", "stockToken": "0xd4417bc34cd728a581b0e1dd03839c6e56fca5cf", "stockDecimals": 18, "pool": "0x10e156b2ddad42a942f85970c1a05e0c5d03011062a848598e50d21e090ef1a6", "poolFeeBps": 30, "maxNotionalUsd": 50, "minNetEdgeBps": 20, "poolKind": "v4",
+      "v4": { "pm": "0x8366a39CC670B4001A1121B8F6A443A643e40951", "router": "0xdc26a92c69df6fd4aa0d2f64fdec549bc655b7f6", "fee": 3000, "tickSpacing": 60, "hooks": "0x0000000000000000000000000000000000000000" } }
+  ]
+}

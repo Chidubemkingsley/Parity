@@ -18,6 +18,7 @@ import { ExchangeClient, HttpTransport } from "@nktkas/hyperliquid";
 import { arg, flag, loadPairs, sleep, RH_RPC } from "./lib/env.ts";
 import { l2, metaAndCtxs, hip3AssetId } from "./lib/hl.ts";
 import { rhClient, rhChain, stockPriceUsd, erc20Abi } from "./lib/rh.ts";
+import { v4PriceUsd, v4SwapExactIn, buildV4Key } from "./lib/rhV4.ts";
 import { basisBps, netEdgeBps, fundingCarryBps, sizeNotionalUsd } from "./strategy.ts";
 import { preTradeChecks, type RiskLimits } from "./risk.ts";
 
@@ -39,11 +40,15 @@ const routerAbi02 = parseAbi(["function exactInputSingle((address tokenIn,addres
 const routerAbi01 = parseAbi(["function exactInputSingle((address tokenIn,address tokenOut,uint24 fee,address recipient,uint256 deadline,uint256 amountIn,uint256 amountOutMinimum,uint160 sqrtPriceLimitX96)) payable returns (uint256)"]);
 const vaultAbi = parseAbi(["function recordRoundTrip((bytes32 pairId,uint128 notional,int128 pnl,int32 entryEdgeBps,bytes32 rhTx,bytes32 hlRef,uint64 openedAt,uint64 closedAt) rt)"]);
 
+function pairV4Key() {
+  return buildV4Key(cfg.quoteToken.address, pair!.stockToken, pair!.v4!);
+}
+
 async function snapshot() {
-  const [q, book, ctxs] = await Promise.all([
-    stockPriceUsd(pair!.pool as Address, pair!.stockToken as Address, pair!.stockDecimals, cfg.quoteToken.decimals),
-    l2(pair!.hlCoin), metaAndCtxs(cfg.hlDex),
-  ]);
+  const priceP = pair!.poolKind === "v4"
+    ? v4PriceUsd(pair!.v4!.pm as Address, pairV4Key(), cfg.quoteToken.decimals, pair!.stockDecimals)
+    : stockPriceUsd(pair!.pool as Address, pair!.stockToken as Address, pair!.stockDecimals, cfg.quoteToken.decimals);
+  const [q, book, ctxs] = await Promise.all([priceP, l2(pair!.hlCoin), metaAndCtxs(cfg.hlDex)]);
   const ctx = ctxs.find((c) => c.coin === pair!.hlCoin);
   if (!ctx) throw new Error(`${pair!.hlCoin} not in ${cfg.hlDex} meta`);
   const b = basisBps(q.priceUsd, book.mid);
@@ -52,6 +57,9 @@ async function snapshot() {
 }
 
 async function swap(pk: Hex, tokenIn: Address, tokenOut: Address, amountIn: bigint, minOut: bigint): Promise<Hex> {
+  if (pair!.poolKind === "v4") {
+    return v4SwapExactIn(pk, pair!.v4!.router as Address, pairV4Key(), tokenIn, amountIn, minOut);
+  }
   const router = process.env.RH_ROUTER as Address; if (!router) throw new Error("RH_ROUTER not set");
   const acct = privateKeyToAccount(pk);
   const wc = createWalletClient({ account: acct, chain: rhChain, transport: http(RH_RPC) });
@@ -72,7 +80,8 @@ async function swap(pk: Hex, tokenIn: Address, tokenOut: Address, amountIn: bigi
 function roundDown(x: number, dec: number) { const m = 10 ** dec; return Math.floor(x * m) / m; }
 
 async function hlOrder(isBuy: boolean, reduceOnly: boolean, px: number, sz: number, assetId: number) {
-  const ex = new ExchangeClient({ transport: new HttpTransport(), wallet: privateKeyToAccount(process.env.HL_API_PK as Hex) });
+  const testnet = process.env.HL_TESTNET === "1";
+  const ex = new ExchangeClient({ transport: new HttpTransport(testnet ? { isTestnet: true } : {}), wallet: privateKeyToAccount(process.env.HL_API_PK as Hex) });
   // Marketable IOC limit order. Price/size formatting rules are strict on HL (5 sig figs, szDecimals) - VERIFY on testnet.
   return ex.order({ orders: [{ a: assetId, b: isBuy, p: px.toPrecision(5), s: String(sz), r: reduceOnly, t: { limit: { tif: "Ioc" } } }], grouping: "na" });
 }

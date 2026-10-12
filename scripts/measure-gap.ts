@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { ROOT, arg, loadPairs, sleep } from "./lib/env.ts";
 import { l2, metaAndCtxs } from "./lib/hl.ts";
 import { stockPriceUsd } from "./lib/rh.ts";
+import { v4PriceUsd, buildV4Key } from "./lib/rhV4.ts";
 import { basisBps, netEdgeBps, fundingCarryBps, isWeekendUtc, summarize, verdict, type Sample } from "./strategy.ts";
 
 const HL_TAKER_BPS = Number(process.env.HL_TAKER_BPS ?? 9);
@@ -29,7 +30,9 @@ for (let i = 0; i < samples; i++) {
       const ctx = ctxs.find((c) => c.coin === p.hlCoin);
       const book = await l2(p.hlCoin);
       let tokenPx = NaN;
-      if (p.pool && p.stockToken) tokenPx = (await stockPriceUsd(p.pool as `0x${string}`, p.stockToken as `0x${string}`, p.stockDecimals, cfg.quoteToken.decimals)).priceUsd;
+      if (p.poolKind === "v4" && p.v4 && p.stockToken) {
+        tokenPx = (await v4PriceUsd(p.v4.pm as `0x${string}`, buildV4Key(cfg.quoteToken.address, p.stockToken, p.v4), cfg.quoteToken.decimals, p.stockDecimals)).priceUsd;
+      } else if (p.pool && p.stockToken) tokenPx = (await stockPriceUsd(p.pool as `0x${string}`, p.stockToken as `0x${string}`, p.stockDecimals, cfg.quoteToken.decimals)).priceUsd;
       const b = basisBps(tokenPx, book.mid);
       const carry = ctx ? fundingCarryBps(ctx.funding, HOLD_HOURS) : 0;
       const net = netEdgeBps(b, { poolFeeBps: p.poolFeeBps, hlTakerBps: HL_TAKER_BPS, hlHalfSpreadBps: book.halfSpreadBps, gasUsd: GAS_USD, notionalUsd: p.maxNotionalUsd }, carry);
