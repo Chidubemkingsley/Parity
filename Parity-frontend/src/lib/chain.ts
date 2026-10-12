@@ -301,6 +301,53 @@ export function useWithdrawData(wallet: `0x${string}` | undefined, amountStr: st
 
 export type PositionState = { shares: bigint; decimals: number; valueUsd: number | null };
 
+const NAV_EVENT = parseAbi(['event DeployedReported(uint256 oldDeployed, uint256 newDeployed, bytes32 evidence, uint256 totalAssets)'])[0];
+
+export type NavReport = {
+  oldDeployed: bigint; newDeployed: bigint; evidence: `0x${string}`; totalAssets: bigint;
+  txHash: `0x${string}`; timestamp: number; blockNumber: bigint;
+};
+
+/** NAV report timeline: latest attestation + full event history scanned from the vault. */
+export function useNavReports() {
+  return useQuery({
+    queryKey: ['nav-reports', 'arb-sepolia'],
+    refetchInterval: 60000,
+    retry: 1,
+    queryFn: async (): Promise<{ rows: NavReport[]; lastReportTs: bigint; lastEvidence: `0x${string}` } | null> => {
+      const dep = addressesByChainId[chainIds.arbitrumSepolia]?.vault;
+      if (!dep || !isContractConfigured(dep)) return null;
+      const v = dep.address;
+      const [lastReportTs, lastEvidence, latest] = (await Promise.all([
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'lastReportTs' }),
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'lastEvidence' }),
+        arbClient.getBlockNumber(),
+      ])) as unknown as [bigint, `0x${string}`, bigint];
+      const from = dep.deployBlock ?? latest;
+      const rows: NavReport[] = [];
+      const STEP = 100000n;
+      for (let s = from; s <= latest; s += STEP) {
+        const e = s + STEP - 1n > latest ? latest : s + STEP - 1n;
+        const logs = await arbClient.getLogs({ address: v, event: NAV_EVENT, fromBlock: s, toBlock: e });
+        for (const l of logs) {
+          const a = l.args as unknown as { oldDeployed: bigint; newDeployed: bigint; evidence: `0x${string}`; totalAssets: bigint };
+          rows.push({
+            oldDeployed: a.oldDeployed, newDeployed: a.newDeployed, evidence: a.evidence, totalAssets: a.totalAssets,
+            txHash: l.transactionHash, timestamp: 0, blockNumber: l.blockNumber,
+          });
+        }
+      }
+      const tmap = new Map<bigint, number>();
+      await Promise.all([...new Set(rows.map((r) => r.blockNumber))].map(async (b) => {
+        tmap.set(b, Number((await arbClient.getBlock({ blockNumber: b })).timestamp));
+      }));
+      for (const r of rows) r.timestamp = tmap.get(r.blockNumber) ?? 0;
+      rows.sort((a, b) => (b.blockNumber > a.blockNumber ? 1 : -1));
+      return { rows, lastReportTs, lastEvidence };
+    },
+  });
+}
+
 const RTR_EVENT = parseAbi(['event RoundTripRecorded(uint256 indexed id, bytes32 indexed pairId, uint128 notional, int128 pnl, int32 entryEdgeBps, bytes32 rhTx, bytes32 hlRef, uint64 openedAt, uint64 closedAt)'])[0];
 
 export type RoundTrip = {
