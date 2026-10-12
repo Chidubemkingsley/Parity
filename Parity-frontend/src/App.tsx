@@ -62,7 +62,7 @@ function Shell({ children }: { children: ReactNode }) {
       <Link href="/" className="brand-lockup" data-testid="link-brand-home" onClick={() => setMenuOpen(false)}>
         <span className="brand-symbol"><i /><i /><i /></span><span className="brand-word">PARITY<span className="brand-period">.</span><small>VAULT SYSTEMS</small></span>
       </Link>
-      <div className="network-pill"><span className="network-dot" /> ARBITRUM ONE <span className="mono">42161</span></div>
+        <div className="network-pill"><span className="network-dot" /> ARBITRUM SEPOLIA <span className="mono">421614</span></div>
       <nav className="side-nav" aria-label="Main navigation">
         {nav.map(group => <div className="nav-group" key={group.title}><p className="nav-caption">{group.title}</p>{group.links.map(([href, label, Icon]) =>
           <Link key={href} href={href} className={`nav-link ${path === href ? 'active' : ''}`} onClick={() => setMenuOpen(false)} data-testid={`nav-${href === '/' ? 'overview' : href.slice(1)}`}><Icon size={16} strokeWidth={1.8} /><span>{label}</span>{path === href && <span className="nav-active-mark" />}</Link>
@@ -370,11 +370,84 @@ function RegistryPage() {
   return <div><PageHeading eyebrow="PAIR CONFIGURATION / ARBITRUM SEPOLIA" title="Pair registry" description="Live token/perp pair configuration from the deployed PairRegistry." /><Unconfigured title="Testnet reads — mainnet not deployed">{'Showing live state of 0xb0ff214f3575098966c1dbf66bd39dca9ddc0130 on Arbitrum Sepolia. Writes stay disabled.'}</Unconfigured><div className="metric-grid"><Metric label="Records" value={pairs ? String(pairs.length) : 'Unavailable'} note="pairCount · arb sepolia" /><Metric label="Enabled" value={pairs ? String(pairs.filter(p => p.enabled).length) : 'Unavailable'} note="isEnabled flags" /><Metric label="Evidence" value="On-chain" note="registry events" /></div><Panel className="large-panel"><div className="panel-head"><div><span className="section-kicker">AUDITABLE SOURCE</span><h2>Registered pairs</h2></div><Tag>{pairs ? 'LIVE READ' : 'NO EVENT INDEX'}</Tag></div>{q.isError ? <EmptyPanel title="Chain read failed" copy="The Arbitrum Sepolia RPC did not respond. Retry shortly." /> : pairs && pairs.length ? <div className="table-scroll"><table><thead><tr><th>SYMBOL</th><th>STOCK TOKEN</th><th>HL ASSET</th><th>MAX NOTIONAL</th><th>MIN EDGE</th><th>ENABLED</th></tr></thead><tbody>{pairs.map(p => <tr key={p.id}><td className="asset-cell">{p.symbol}</td><td className="mono">{`${p.stockToken.slice(0, 10)}…`}</td><td>{p.hlAsset}</td><td>{`$${(Number(p.maxNotional) / 1e6).toLocaleString()}`}</td><td>{`${p.minEdgeBps} bps`}</td><td>{p.enabled ? 'YES' : 'NO'}</td></tr>)}</tbody></table></div> : <EmptyPanel title="No pairs registered yet" copy="The registry is live but empty. The admin registers a pair via upsertPair on 0xb0ff214f3575098966c1dbf66bd39dca9ddc0130 — no testnet pairs have been registered." />}</Panel></div>;
 }
 
+function JournalForm({ vault, wallet }: { vault: `0x${string}`; wallet: `0x${string}` }) {
+  const [f, setF] = useState({
+    pairId: '0x85339a355bf1243cda4b91f055c35f9f8d1d5a6736946189a83f26ad2b33148b',
+    notional: '5000000', pnl: '-29953', edge: '0',
+    rhTx: '0xd112e0068b0caad2101311b139dbcc6709ce7330f0d32bac46e86b27a94ffc93',
+    hlRef: '0x75d3b1253b85d54bcdb0284f6d6432b09266e4a9f672528efaec7f4e79befc45',
+    opened: '1791816414', closed: '1791816427',
+  });
+  const [sim, setSim] = useState<string | null>(null);
+  const [tx, setTx] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { writeContractAsync } = useWriteContract();
+  const set = (k: keyof typeof f) => (e: ChangeEvent<HTMLInputElement>) => { setF({ ...f, [k]: e.target.value }); setSim(null); setTx(null); };
+  const p = (() => {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(f.pairId) || !/^0x[0-9a-fA-F]{64}$/.test(f.rhTx) || !/^0x[0-9a-fA-F]{64}$/.test(f.hlRef)) return null;
+    const notional = BigInt(Math.floor(Number(f.notional)));
+    const pnlN = Number(f.pnl), edge = Math.floor(Number(f.edge));
+    const opened = Math.floor(Number(f.opened)), closed = Math.floor(Number(f.closed));
+    if (!Number.isFinite(Number(f.notional)) || Number(f.notional) <= 0 || !Number.isFinite(pnlN) || !Number.isFinite(edge) || !Number.isFinite(opened) || !Number.isFinite(closed)) return null;
+    return {
+      pairId: f.pairId as `0x${string}`, notional, pnl: BigInt(Math.trunc(pnlN)), edge, rhTx: f.rhTx as `0x${string}`,
+      hlRef: f.hlRef as `0x${string}`, opened: BigInt(opened), closed: BigInt(closed),
+    };
+  })();
+  const onSimulate = async () => {
+    if (!p) return; setErr(null);
+    try {
+      await arbClient.simulateContract({
+        address: vault, abi: ParityVaultAbi, functionName: 'recordRoundTrip',
+        args: [{ pairId: p.pairId, notional: p.notional, pnl: p.pnl, entryEdgeBps: p.edge, rhTx: p.rhTx, hlRef: p.hlRef, openedAt: p.opened, closedAt: p.closed }],
+        account: wallet,
+      });
+      setSim('Simulation passed — pair registered, within cap, role held. Review, then sign.');
+    } catch (e) { setErr('Simulation reverted: ' + (e instanceof Error ? e.message.slice(0, 220) : String(e))); setSim(null); }
+  };
+  const onSign = async () => {
+    if (!p || !sim) return;
+    setBusy(true); setErr(null); setTx(null);
+    try {
+      const h = await writeContractAsync({
+        address: vault, abi: ParityVaultAbi, functionName: 'recordRoundTrip',
+        args: [{ pairId: p.pairId, notional: p.notional, pnl: p.pnl, entryEdgeBps: p.edge, rhTx: p.rhTx, hlRef: p.hlRef, openedAt: p.opened, closedAt: p.closed }],
+        chainId: chainIds.arbitrumSepolia,
+      });
+      setTx(h);
+    } catch (e) { setErr(e instanceof Error ? e.message.slice(0, 200) : String(e)); }
+    setBusy(false);
+  };
+  return <div>
+    <div className="calc-fields">
+      <ParamField label="Pair id" unit="bytes32" value={f.pairId} onChange={v => setF({ ...f, pairId: v })} placeholder="keccak(symbol)" />
+      <ParamField label="Notional" unit="USDC base units" value={f.notional} onChange={v => setF({ ...f, notional: v })} placeholder="5000000" />
+      <ParamField label="PnL" unit="signed base units" value={f.pnl} onChange={v => setF({ ...f, pnl: v })} placeholder="-29953" />
+      <ParamField label="Entry edge" unit="bps" value={f.edge} onChange={v => setF({ ...f, edge: v })} placeholder="0" />
+      <ParamField label="RH tx" unit="bytes32" value={f.rhTx} onChange={v => setF({ ...f, rhTx: v })} placeholder="0xd112…" />
+      <ParamField label="HL ref" unit="bytes32" value={f.hlRef} onChange={v => setF({ ...f, hlRef: v })} placeholder="keccak ref" />
+      <ParamField label="Opened at" unit="unix s" value={f.opened} onChange={v => setF({ ...f, opened: v })} placeholder="1791816414" />
+      <ParamField label="Closed at" unit="unix s" value={f.closed} onChange={v => setF({ ...f, closed: v })} placeholder="1791816427" />
+    </div>
+    {p ? <p className="fine-print">Journals ${(Number(p.notional) / 1e6).toLocaleString()} notional, PnL ${(Number(p.pnl) / 1e6).toLocaleString()} USDC. Pair must be registered and enabled or this reverts.</p> : <p className="fine-print">Fill all fields with valid bytes32 hashes and numbers.</p>}
+    <div className="hero-actions"><button onClick={onSimulate} disabled={!p} className="button button-secondary">1 · SIMULATE</button><button onClick={onSign} disabled={!p || !sim || busy} className="button button-primary">{busy ? 'WAITING FOR WALLET…' : '2 · SIGN JOURNAL'}</button></div>
+    {sim ? <p className="fine-print">{sim}</p> : null}
+    {tx ? <p className="fine-print">Submitted: <a className="text-link mono" href={`https://sepolia.arbiscan.io/tx/${tx}`} target="_blank" rel="noreferrer">{shortAddr(tx)} <ExternalLink size={12} /></a> — the table below updates automatically.</p> : null}
+    {err ? <p className="fine-print">Failed: {err}</p> : null}
+  </div>;
+}
+
 function RoundTripsPage() {
   const q = useRoundTrips();
   const st = q.data ?? null;
+  const { address } = useAccount();
+  const roles = useAdminRoles(address);
+  const isKeeper = roles.data?.isKeeper ?? null;
+  const vaultDep = addressesByChainId[chainIds.arbitrumSepolia]?.vault;
+  const VAULT = vaultDep && isContractConfigured(vaultDep) ? vaultDep.address : null;
   const fmtSigned = (v: bigint) => `${v < 0n ? '−' : '+'}$${(Number(v < 0n ? -v : v) / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-  return <div><PageHeading eyebrow="AUDIT TRAIL / VAULT EVENTS" title="Round-trip history" description="Every recorded round trip, traceable to on-chain events and external execution references." /><Unconfigured title="Testnet reads — mainnet not deployed">{'Showing live journal state of 0xb0e660108571b4b191a14b0efdf8ea98d76fb5cc on Arbitrum Sepolia. Writes stay disabled.'}</Unconfigured><div className="metric-grid"><Metric label="Records" value={st ? String(st.count) : 'Unavailable'} note="roundTripCount · live" /><Metric label="Cumulative notional" value={st ? `$${(Number(st.cumNotional) / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'Unavailable'} note="on-chain tally" /><Metric label="Cumulative PnL" value={st ? fmtSigned(st.cumPnl) : 'Unavailable'} note="on-chain tally · fills, not estimates" /></div><Panel className="large-panel"><div className="panel-head"><div><span className="section-kicker">AUDITABLE SOURCE</span><h2>Recorded activity</h2></div>{st && st.rows.length ? <Tag tone="green">LIVE SCAN</Tag> : <Tag>NO EVENT INDEX</Tag>}</div>{q.isError ? <EmptyPanel title="Chain read failed" copy="The Arbitrum Sepolia RPC did not respond. Retry shortly." /> : st && st.rows.length ? <div className="table-scroll"><table><thead><tr><th>ID</th><th>RECORDED</th><th>NOTIONAL</th><th>PNL</th><th>ENTRY EDGE</th><th>RH TX</th><th>JOURNAL TX</th></tr></thead><tbody>{st.rows.map(r => <tr key={r.id.toString()}><td>#{r.id.toString()}</td><td>{r.timestamp ? new Date(r.timestamp * 1000).toLocaleString() : '…'}</td><td>{`$${(Number(r.notional) / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })}`}</td><td className={r.pnl < 0n ? 'orange-text' : ''}>{fmtSigned(r.pnl)}</td><td>{`${r.entryEdgeBps} bps`}</td><td className="mono">{`${r.rhTx.slice(0, 10)}…`}</td><td><a className="text-link mono" href={`https://sepolia.arbiscan.io/tx/${r.txHash}`} target="_blank" rel="noreferrer">{shortAddr(r.txHash)} <ExternalLink size={12} /></a></td></tr>)}</tbody></table></div> : <EmptyPanel title="No round trips recorded yet" copy="The keeper journals each loop via recordRoundTrip on 0xb0e660108571b4b191a14b0efdf8ea98d76fb5cc. No loops have completed on testnet — the short leg is waiting on Hyperliquid testnet funding." />}</Panel></div>;
+  return <div><PageHeading eyebrow="AUDIT TRAIL / VAULT EVENTS" title="Round-trip history" description="Every recorded round trip, traceable to on-chain events and external execution references." /><Unconfigured title="Testnet reads — mainnet not deployed">{'Showing live journal state of 0xb0e660108571b4b191a14b0efdf8ea98d76fb5cc on Arbitrum Sepolia. Writes stay disabled.'}</Unconfigured><div className="metric-grid"><Metric label="Records" value={st ? String(st.count) : 'Unavailable'} note="roundTripCount · live" /><Metric label="Cumulative notional" value={st ? `$${(Number(st.cumNotional) / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'Unavailable'} note="on-chain tally" /><Metric label="Cumulative PnL" value={st ? fmtSigned(st.cumPnl) : 'Unavailable'} note="on-chain tally · fills, not estimates" /></div><Panel className="large-panel"><div className="panel-head"><div><span className="section-kicker">KEEPER JOURNAL</span><h2>Record a round trip</h2></div>{isKeeper ? <Tag tone="green">KEEPER ROLE</Tag> : <Tag tone="orange">KEEPER ONLY</Tag>}</div>{isKeeper && VAULT && address ? <JournalForm vault={VAULT} wallet={address} /> : <EmptyPanel title="Keeper role required" copy="Connect the keeper wallet to journal a completed loop. Prefilled with the executed $5 spot round trip — simulate, sign, and record #1 appears below." />}</Panel><Panel className="large-panel"><div className="panel-head"><div><span className="section-kicker">AUDITABLE SOURCE</span><h2>Recorded activity</h2></div>{st && st.rows.length ? <Tag tone="green">LIVE SCAN</Tag> : <Tag>NO EVENT INDEX</Tag>}</div>{q.isError ? <EmptyPanel title="Chain read failed" copy="The Arbitrum Sepolia RPC did not respond. Retry shortly." /> : st && st.rows.length ? <div className="table-scroll"><table><thead><tr><th>ID</th><th>RECORDED</th><th>NOTIONAL</th><th>PNL</th><th>ENTRY EDGE</th><th>RH TX</th><th>JOURNAL TX</th></tr></thead><tbody>{st.rows.map(r => <tr key={r.id.toString()}><td>#{r.id.toString()}</td><td>{r.timestamp ? new Date(r.timestamp * 1000).toLocaleString() : '…'}</td><td>{`$${(Number(r.notional) / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })}`}</td><td className={r.pnl < 0n ? 'orange-text' : ''}>{fmtSigned(r.pnl)}</td><td>{`${r.entryEdgeBps} bps`}</td><td className="mono">{`${r.rhTx.slice(0, 10)}…`}</td><td><a className="text-link mono" href={`https://sepolia.arbiscan.io/tx/${r.txHash}`} target="_blank" rel="noreferrer">{shortAddr(r.txHash)} <ExternalLink size={12} /></a></td></tr>)}</tbody></table></div> : <EmptyPanel title="No round trips recorded yet" copy="The keeper journals each loop via recordRoundTrip on 0xb0e660108571b4b191a14b0efdf8ea98d76fb5cc. No loops have completed on testnet — the short leg is waiting on Hyperliquid testnet funding." />}</Panel></div>;
 }
 
 function ReportsPage() {
