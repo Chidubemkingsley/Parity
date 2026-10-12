@@ -36,6 +36,7 @@ export type VaultState = {
   totalAssets: bigint; totalSupply: bigint; decimals: number; paused: boolean;
   depositCap: bigint; idle: bigint; deployed: bigint; sharePrice: number;
   roundTrips: bigint; cumNotional: bigint; cumPnl: bigint;
+  executor: `0x${string}`; feeRecipient: `0x${string}`;
 };
 
 function vaultAddr(): Address | null {
@@ -53,17 +54,18 @@ export function useVaultState() {
       if (!v) return null;
       const r = (fn: string, args: unknown[] = []) =>
         arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: fn, args } as never) as Promise<never>;
-      const [totalAssets, totalSupply, decimals, paused, depositCap, idle, deployed, roundTrips, cumNotional, cumPnl] =
+      const [totalAssets, totalSupply, decimals, paused, depositCap, idle, deployed, roundTrips, cumNotional, cumPnl, executor, feeRecipient] =
         (await Promise.all([
           r('totalAssets'), r('totalSupply'), r('decimals'), r('paused'), r('depositCap'),
           r('idle'), r('deployed'), r('roundTripCount'), r('cumulativeNotional'), r('cumulativePnl'),
-        ])) as unknown as [bigint, bigint, bigint, boolean, bigint, bigint, bigint, bigint, bigint, bigint];
+          r('executor'), r('feeRecipient'),
+        ])) as unknown as [bigint, bigint, bigint, boolean, bigint, bigint, bigint, bigint, bigint, bigint, `0x${string}`, `0x${string}`];
       const dec = Number(decimals);
       const supply = Number(totalSupply) / 10 ** dec;
       return {
         totalAssets, totalSupply, decimals: dec, paused, depositCap, idle, deployed,
         sharePrice: supply > 0 ? Number(totalAssets) / 10 ** dec / supply : NaN,
-        roundTrips, cumNotional, cumPnl,
+        roundTrips, cumNotional, cumPnl, executor, feeRecipient,
       };
     },
   });
