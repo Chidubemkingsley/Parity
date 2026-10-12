@@ -28,9 +28,11 @@ const robinhoodTestnet = {
   rpcUrls: { default: { http: [env.VITE_RH_TESTNET_RPC ?? 'https://rpc.testnet.chain.robinhood.com'] } },
 } as const satisfies Chain;
 
+export { hyperEvmTestnet, robinhoodTestnet };
+
 const arbSepoliaRpc = env.VITE_ARB_SEPOLIA_RPC ?? 'https://sepolia-rollup.arbitrum.io/rpc';
 export const arbClient = createPublicClient({ chain: arbitrumSepolia, transport: http(arbSepoliaRpc) });
-const rhClient = createPublicClient({ chain: robinhoodTestnet, transport: http() });
+export const rhClient = createPublicClient({ chain: robinhoodTestnet, transport: http() });
 
 export type VaultState = {
   totalAssets: bigint; totalSupply: bigint; decimals: number; paused: boolean;
@@ -148,7 +150,35 @@ export function useTestnetTokenPrice() {
   });
 }
 
-export { hyperEvmTestnet, robinhoodTestnet };
+export const TESTNET_V4 = {
+  pm: '0x8366a39CC670B4001A1121B8F6A443A643e40951',
+  router: '0xdc26a92c69df6fd4aa0d2f64fdec549bc655b7f6',
+  musdg: '0xac0a7216290fa7445782f80628bf727b084e41e0',
+  mtsla: '0xd4417bc34cd728a581b0e1dd03839c6e56fca5cf',
+  fee: 3000,
+  tickSpacing: 60,
+  hooks: '0x0000000000000000000000000000000000000000',
+} as const;
+
+export type V4Balances = { musdg: bigint; mtsla: bigint } | null;
+
+/** mUSDG/mTSLA balances for the connected wallet on Robinhood testnet. */
+export function useV4Balances(wallet: `0x${string}` | undefined) {
+  return useQuery({
+    queryKey: ['v4-balances', 'rh-testnet', wallet ?? 'disconnected'],
+    refetchInterval: 15000,
+    retry: 1,
+    enabled: !!wallet,
+    queryFn: async (): Promise<V4Balances> => {
+      if (!wallet) return null;
+      const [musdg, mtsla] = (await Promise.all([
+        rhClient.readContract({ address: TESTNET_V4.musdg as Address, abi: erc20ReadAbi, functionName: 'balanceOf', args: [wallet] }),
+        rhClient.readContract({ address: TESTNET_V4.mtsla as Address, abi: erc20ReadAbi, functionName: 'balanceOf', args: [wallet] }),
+      ])) as unknown as [bigint, bigint];
+      return { musdg, mtsla };
+    },
+  });
+}
 
 const DEPOSIT_EVENT = parseAbi(['event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares)'])[0];
 const WITHDRAW_EVENT = parseAbi(['event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)'])[0];
@@ -219,7 +249,7 @@ export function usdcAddr(): `0x${string}` | null {
   return (addressesByChainId[chainIds.arbitrumSepolia]?.usdc?.address ?? null) as `0x${string}` | null;
 }
 
-const erc20ReadAbi = parseAbi([
+export const erc20ReadAbi = parseAbi([
   'function balanceOf(address) view returns (uint256)',
   'function allowance(address,address) view returns (uint256)',
   'function decimals() view returns (uint8)',

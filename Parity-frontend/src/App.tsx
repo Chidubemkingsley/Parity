@@ -4,9 +4,10 @@ import { Link, Route, Switch, Router as WouterRouter, useLocation } from 'wouter
 import { useHealthCheck, useQueryHyperliquidMarket, type HyperliquidQueryResponse } from '@/lib/api-client';
 import { Activity, ArrowDownToLine, ArrowLeftRight, ArrowUpRight, BookOpen, Boxes, CircleAlert, Copy, ExternalLink, Gauge, GitBranch, Layers3, Menu, Radar, RefreshCw, Shield, ShieldAlert, Wallet, X } from 'lucide-react';
 import { ErrorBoundary } from '@/components/error-boundary';
-import { useVaultState, useRegistryPairs, useTestnetTokenPrice, usePosition, useDepositData, useWithdrawData, useCostBasis, useActivity, useRoundTrips, useNavReports, useRiskParams, useAdminRoles, usdcAddr, arbClient, erc20WriteAbi } from '@/lib/chain';
+import { useQuery } from '@tanstack/react-query';
+import { useVaultState, useRegistryPairs, useTestnetTokenPrice, usePosition, useDepositData, useWithdrawData, useCostBasis, useActivity, useRoundTrips, useNavReports, useRiskParams, useAdminRoles, useV4Balances, usdcAddr, arbClient, rhClient, erc20WriteAbi, erc20ReadAbi, TESTNET_V4 } from '@/lib/chain';
 import { addressesByChainId, chainIds, isContractConfigured } from '@/lib/addresses';
-import { ParityVaultAbi, PairRegistryAbi } from '@/lib/abis';
+import { ParityVaultAbi, PairRegistryAbi, TestnetV4RouterAbi } from '@/lib/abis';
 import { WalletProvider, ConnectButton, shortAddr } from '@/lib/wallet';
 import { useAccount, useWriteContract } from 'wagmi';
 
@@ -231,6 +232,75 @@ function TestnetPairPanel({ rows, tokenPx, tokenLoading }: { rows: MarketRow[]; 
   return <Panel><div className="panel-head"><div><span className="section-kicker">PAIR INPUTS · TESTNET</span><h2>mTSLA / xyz:TSLA</h2></div><Tag tone="green">LIVE</Tag></div><div className="input-status"><div><span>Robinhood token quote</span><b>{tokenLoading ? '…' : tokenPx !== null ? `$${displayNumber(tokenPx)}` : 'UNAVAILABLE'}</b></div><div><span>Perp mid (xyz:TSLA)</span><b>{Number.isFinite(mid) ? `$${displayNumber(mid)}` : 'UNAVAILABLE'}</b></div><div><span>Basis</span><b>{basis === null ? 'NOT CALCULABLE' : `${basis >= 0 ? '+' : ''}${basis.toFixed(1)} bps`}</b></div></div><p className="fine-print">Mock-anchored V4 pool on Robinhood testnet vs xyz:TSLA perp on Hyperliquid testnet. Plumbing signal, not strategy evidence.</p></Panel>;
 }
 
+function SwapTicket() {
+  const { address, isConnected } = useAccount();
+  const { writeContractAsync } = useWriteContract();
+  const bal = useV4Balances(address);
+  const px = useTestnetTokenPrice();
+  const [dir, setDir] = useState<'buy' | 'sell'>('buy');
+  const [amount, setAmount] = useState('');
+  const [tx, setTx] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const tokenIn = (dir === 'buy' ? TESTNET_V4.musdg : TESTNET_V4.mtsla) as `0x${string}`;
+  const decIn = dir === 'buy' ? 6 : 18;
+  const decOut = dir === 'buy' ? 18 : 6;
+  const allowQ = useQuery({
+    queryKey: ['v4-allow', tokenIn, address ?? 'x'],
+    enabled: !!address,
+    refetchInterval: 15000,
+    retry: 1,
+    queryFn: async () => (await rhClient.readContract({
+      address: tokenIn, abi: erc20ReadAbi, functionName: 'allowance', args: [address as `0x${string}`, TESTNET_V4.router as `0x${string}`],
+    })) as unknown as bigint,
+  });
+  const amt = amount.trim() === '' || !Number.isFinite(Number(amount)) ? 0n : BigInt(Math.floor(Number(amount) * 10 ** decIn));
+  const price = px.data ?? null;
+  const expOut = price !== null && amt > 0n
+    ? (dir === 'buy' ? Number(amt) / 1e6 / price : (Number(amt) / 10 ** decIn) * price)
+    : null;
+  const minOut = expOut !== null ? BigInt(Math.floor(expOut * 0.99 * 10 ** decOut)) : 0n;
+  const balIn = bal.data ? (dir === 'buy' ? bal.data.musdg : bal.data.mtsla) : null;
+  const blocked = !isConnected ? 'Connect a wallet on Robinhood testnet.'
+    : price === null ? 'Waiting for pool price…'
+    : amt <= 0n ? 'Enter an amount.'
+    : balIn !== null && amt > balIn ? 'Exceeds your balance.'
+    : null;
+  const needsApproval = (allowQ.data ?? 0n) < amt && amt > 0n;
+  const onSwap = async () => {
+    if (!address || blocked) return;
+    setBusy(true); setErr(null); setTx(null);
+    try {
+      if (needsApproval) {
+        const h = await writeContractAsync({ address: tokenIn, abi: erc20WriteAbi, functionName: 'approve', args: [TESTNET_V4.router as `0x${string}`, amt], chainId: chainIds.robinhoodTestnet });
+        await rhClient.waitForTransactionReceipt({ hash: h });
+      }
+      const h2 = await writeContractAsync({
+        address: TESTNET_V4.router as `0x${string}`, abi: TestnetV4RouterAbi, functionName: 'swapExactInput',
+        args: [{
+          key: { currency0: TESTNET_V4.musdg as `0x${string}`, currency1: TESTNET_V4.mtsla as `0x${string}`, fee: TESTNET_V4.fee, tickSpacing: TESTNET_V4.tickSpacing, hooks: TESTNET_V4.hooks as `0x${string}` },
+          zeroForOne: dir === 'buy', amountIn: amt, amountOutMin: minOut,
+          deadline: BigInt(Math.floor(Date.now() / 1000) + 300), to: address,
+        }],
+        chainId: chainIds.robinhoodTestnet,
+      });
+      setTx(h2);
+    } catch (e) { setErr(e instanceof Error ? e.message.slice(0, 200) : String(e)); }
+    setBusy(false);
+  };
+  return <Panel><div className="panel-head"><div><span className="section-kicker">SPOT LEG · TESTNET</span><h2>Swap mUSDG ⇄ mTSLA</h2></div>{blocked ? <Tag tone="orange">BLOCKED</Tag> : <Tag tone="green">READY</Tag>}</div>
+    <div className="hero-actions"><button onClick={() => { setDir('buy'); setTx(null); }} disabled={dir === 'buy'} className="button button-quiet">BUY mTSLA</button><button onClick={() => { setDir('sell'); setTx(null); }} disabled={dir === 'sell'} className="button button-quiet">SELL mTSLA</button></div>
+    <label className="field-label" htmlFor="swap-amount">Amount <span>{dir === 'buy' ? 'mUSDG' : 'mTSLA'}</span></label>
+    <div className="amount-field"><input id="swap-amount" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" data-testid="input-swap-amount" /><button onClick={() => balIn !== null && setAmount((Number(balIn) / 10 ** decIn).toString())} disabled={!isConnected} data-testid="button-swap-max">MAX</button></div>
+    <div className="ticket-detail"><span>Your balance</span><b>{!isConnected ? 'Connect wallet' : balIn !== null ? `${(Number(balIn) / 10 ** decIn).toLocaleString(undefined, { maximumFractionDigits: 4 })}` : '…'}</b></div>
+    <div className="ticket-detail"><span>Expected out (≈)</span><b>{expOut !== null ? `${expOut.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${dir === 'buy' ? 'mTSLA' : 'mUSDG'}` : '—'}</b></div>
+    <button onClick={onSwap} disabled={!!blocked || busy} className="button button-primary full-button" data-testid="button-submit-swap">{blocked ?? (busy ? 'WAITING FOR WALLET…' : needsApproval ? 'APPROVE + SWAP' : 'SWAP')}</button>
+    {tx ? <p className="fine-print">Submitted: <a className="text-link mono" href={`https://explorer.testnet.chain.robinhood.com/tx/${tx}`} target="_blank" rel="noreferrer">{shortAddr(tx)} <ExternalLink size={12} /></a></p> : null}
+    {err ? <p className="fine-print">Failed: {err}</p> : null}
+    <p className="fine-print">Exact-input swap through the testnet V4 router · 1% tolerance · you sign everything.</p>
+  </Panel>;
+}
+
 function Monitor() {
   const hl = useQueryHyperliquidMarket();
   const tokenPx = useTestnetTokenPrice();
@@ -249,6 +319,7 @@ function Monitor() {
       </Panel>
       <div className="monitor-aside">
         <TestnetPairPanel rows={rows} tokenPx={tokenPx.data ?? null} tokenLoading={tokenPx.isLoading} />
+        <SwapTicket />
         <Panel><div className="panel-head"><div><span className="section-kicker">COST MODEL</span><h2>Assumptions only</h2></div></div><div className="assumption"><span>Hyperliquid taker fee</span><b>9 bps <small>editable assumption</small></b></div><div className="assumption"><span>Pool fee</span><b>30 bps <small>editable assumption</small></b></div><p className="fine-print">Values above are unverified example assumptions from project notes, not live fee reads or execution estimates.</p><Link href="/strategy" className="text-link" data-testid="link-market-calculator">Open calculator <ArrowUpRight size={14} /></Link></Panel>
       </div>
     </div>
