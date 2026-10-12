@@ -301,6 +301,63 @@ export function useWithdrawData(wallet: `0x${string}` | undefined, amountStr: st
 
 export type PositionState = { shares: bigint; decimals: number; valueUsd: number | null };
 
+const RTR_EVENT = parseAbi(['event RoundTripRecorded(uint256 indexed id, bytes32 indexed pairId, uint128 notional, int128 pnl, int32 entryEdgeBps, bytes32 rhTx, bytes32 hlRef, uint64 openedAt, uint64 closedAt)'])[0];
+
+export type RoundTrip = {
+  id: bigint; pairId: `0x${string}`; notional: bigint; pnl: bigint; entryEdgeBps: number;
+  rhTx: `0x${string}`; hlRef: `0x${string}`; openedAt: number; closedAt: number;
+  txHash: `0x${string}`; timestamp: number; blockNumber: bigint;
+};
+
+export type RoundTripState = {
+  count: bigint; cumNotional: bigint; cumPnl: bigint; rows: RoundTrip[];
+};
+
+/** Round-trip journal: tallies + full event rows scanned from the vault. */
+export function useRoundTrips() {
+  return useQuery({
+    queryKey: ['round-trips', 'arb-sepolia'],
+    refetchInterval: 60000,
+    retry: 1,
+    queryFn: async (): Promise<RoundTripState | null> => {
+      const dep = addressesByChainId[chainIds.arbitrumSepolia]?.vault;
+      if (!dep || !isContractConfigured(dep)) return null;
+      const v = dep.address;
+      const [count, cumNotional, cumPnl, latest] = (await Promise.all([
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'roundTripCount' }),
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'cumulativeNotional' }),
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'cumulativePnl' }),
+        arbClient.getBlockNumber(),
+      ])) as unknown as [bigint, bigint, bigint, bigint];
+      const from = dep.deployBlock ?? latest;
+      const rows: RoundTrip[] = [];
+      const STEP = 100000n;
+      for (let s = from; s <= latest; s += STEP) {
+        const e = s + STEP - 1n > latest ? latest : s + STEP - 1n;
+        const logs = await arbClient.getLogs({ address: v, event: RTR_EVENT, fromBlock: s, toBlock: e });
+        for (const l of logs) {
+          const a = l.args as unknown as {
+            id: bigint; pairId: `0x${string}`; notional: bigint; pnl: bigint; entryEdgeBps: number;
+            rhTx: `0x${string}`; hlRef: `0x${string}`; openedAt: bigint; closedAt: bigint;
+          };
+          rows.push({
+            id: a.id, pairId: a.pairId, notional: a.notional, pnl: a.pnl, entryEdgeBps: Number(a.entryEdgeBps),
+            rhTx: a.rhTx, hlRef: a.hlRef, openedAt: Number(a.openedAt), closedAt: Number(a.closedAt),
+            txHash: l.transactionHash, timestamp: 0, blockNumber: l.blockNumber,
+          });
+        }
+      }
+      const tmap = new Map<bigint, number>();
+      await Promise.all([...new Set(rows.map((r) => r.blockNumber))].map(async (b) => {
+        tmap.set(b, Number((await arbClient.getBlock({ blockNumber: b })).timestamp));
+      }));
+      for (const r of rows) r.timestamp = tmap.get(r.blockNumber) ?? 0;
+      rows.sort((a, b) => (a.id > b.id ? -1 : 1));
+      return { count, cumNotional, cumPnl, rows };
+    },
+  });
+}
+
 export function usePosition(wallet: `0x${string}` | undefined) {
   return useQuery({
     queryKey: ['position', 'arb-sepolia', wallet ?? 'disconnected'],
