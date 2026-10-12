@@ -4,9 +4,11 @@ import { Link, Route, Switch, Router as WouterRouter, useLocation } from 'wouter
 import { useHealthCheck, useQueryHyperliquidMarket, type HyperliquidQueryResponse } from '@/lib/api-client';
 import { Activity, ArrowDownToLine, ArrowLeftRight, ArrowUpRight, BookOpen, Boxes, CircleAlert, Copy, ExternalLink, Gauge, GitBranch, Layers3, Menu, Radar, RefreshCw, Shield, ShieldAlert, Wallet, X } from 'lucide-react';
 import { ErrorBoundary } from '@/components/error-boundary';
-import { useVaultState, useRegistryPairs, useTestnetTokenPrice, usePosition } from '@/lib/chain';
+import { useVaultState, useRegistryPairs, useTestnetTokenPrice, usePosition, useDepositData, useWithdrawData, arbClient, erc20WriteAbi } from '@/lib/chain';
+import { addressesByChainId, chainIds, isContractConfigured } from '@/lib/addresses';
+import { ParityVaultAbi } from '@/lib/abis';
 import { WalletProvider, ConnectButton, shortAddr } from '@/lib/wallet';
-import { useAccount } from 'wagmi';
+import { useAccount, useWriteContract } from 'wagmi';
 
 const queryClient = new QueryClient();
 
@@ -266,8 +268,60 @@ function Vault() {
 
 function TransactionPage({ mode }: { mode: 'deposit' | 'withdraw' }) {
   const [amount, setAmount] = useState('');
+  const [txHash, setTxHash] = useState<string | null>(null);
+  const [txError, setTxError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const title = mode === 'deposit' ? 'Deposit' : 'Withdraw';
-  return <div><PageHeading eyebrow={`ARBITRUM ONE / ${title.toUpperCase()}`} title={title} description={mode === 'deposit' ? 'Preview and deposit USDC into the Parity vault.' : 'Redeem shares or withdraw USDC from your Parity position.'} /><Unconfigured title="Transactions disabled — no verified deployment">{`No vault or token address / ABI is configured. ${title} is unavailable; wallet connection and signing are not enabled.`}</Unconfigured><div className="transaction-grid"><Panel><div className="panel-head"><div><span className="section-kicker">ORDER TICKET</span><h2>{mode === 'deposit' ? 'Allocate USDC' : 'Request exit'}</h2></div><Tag>DISABLED</Tag></div><label className="field-label" htmlFor={`${mode}-amount`}>Amount <span>{mode === 'deposit' ? 'USDC' : 'USDC / shares'}</span></label><div className="amount-field"><input id={`${mode}-amount`} inputMode="decimal" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0.00" disabled data-testid={`input-${mode}-amount`} /><button disabled data-testid={`button-${mode}-max`}>MAX</button></div><div className="ticket-detail"><span>Available balance</span><b>Unavailable</b></div><div className="ticket-detail"><span>Estimated {mode === 'deposit' ? 'shares' : 'assets'}</span><b>Unavailable</b></div><button disabled className="button button-primary full-button" data-testid={`button-submit-${mode}`}>{mode === 'deposit' ? 'DEPOSIT UNAVAILABLE' : 'WITHDRAW UNAVAILABLE'}</button><p className="fine-print">No transaction will be submitted. {mode === 'withdraw' ? 'Withdrawals are normally limited by idle USDC; actual limit is not available.' : 'Deposit limits, wallet balances, and preview values cannot be checked.'}</p></Panel><Panel className="transaction-context"><span className="section-kicker">EXECUTION SAFETY</span><h2>{mode === 'deposit' ? 'Before capital enters' : 'Exits remain a priority'}</h2><ul className="check-list">{(mode === 'deposit' ? ['Verify Arbitrum contract and USDC addresses','Read maxDeposit and current NAV freshness','Simulate approval and deposit before wallet prompt','Confirm transaction on Arbiscan'] : ['Read your share balance and maxWithdraw','Check idle vault USDC available for redemption','Simulate the exact exit before wallet prompt','Confirm the resulting transaction on Arbiscan']).map((s,i)=><li key={s}><span>{String(i+1).padStart(2,'0')}</span>{s}<Tag>NOT AVAILABLE</Tag></li>)}</ul></Panel></div></div>;
+  const { address, isConnected } = useAccount();
+  const { writeContractAsync } = useWriteContract();
+  const vaultDep = addressesByChainId[chainIds.arbitrumSepolia]?.vault;
+  const VAULT = vaultDep && isContractConfigured(vaultDep) ? vaultDep.address : null;
+  const dep = useDepositData(address, mode === 'deposit' ? amount : '');
+  const wd = useWithdrawData(address, mode === 'withdraw' ? amount : '');
+  const toUnits = (s: string) => (s.trim() === '' || !Number.isFinite(Number(s)) ? 0n : BigInt(Math.floor(Number(s) * 1e6)));
+  const amt = toUnits(amount);
+  const d = dep.data ?? null;
+  const w = wd.data ?? null;
+  const blockedReason = !isConnected ? 'Connect a wallet to continue.'
+    : !VAULT ? 'Vault not configured.'
+    : mode === 'deposit' && d?.paused ? 'Vault is paused — deposits blocked on-chain.'
+    : mode === 'deposit' && d?.navStale ? 'NAV is stale — deposits blocked on-chain.'
+    : amt <= 0n ? 'Enter an amount above 0.'
+    : null;
+  const needsApproval = mode === 'deposit' && !!d && amt > 0n && d.allowance < amt;
+  const overMax = mode === 'deposit' ? (!!d && amt > d.maxDeposit) : (!!w && amt > w.maxAssets);
+  const canSubmit = isConnected && !!VAULT && !busy && amt > 0n && !overMax && !(mode === 'deposit' && (d?.paused || d?.navStale));
+  const onMax = () => {
+    if (mode === 'deposit' && d) setAmount((Number(d.maxDeposit) / 1e6).toString());
+    else if (mode === 'withdraw' && w) setAmount((Number(w.maxAssets) / 1e6).toString());
+  };
+  const send = async () => {
+    if (!address || !VAULT || !canSubmit) return;
+    setBusy(true); setTxError(null); setTxHash(null);
+    try {
+      if (mode === 'deposit' && d) {
+        if (d.allowance < amt) {
+          const h = await writeContractAsync({ address: d.usdc, abi: erc20WriteAbi, functionName: 'approve', args: [VAULT, amt], chainId: chainIds.arbitrumSepolia });
+          await arbClient.waitForTransactionReceipt({ hash: h });
+        }
+        const h2 = await writeContractAsync({ address: VAULT, abi: ParityVaultAbi, functionName: 'deposit', args: [amt, address], chainId: chainIds.arbitrumSepolia });
+        setTxHash(h2);
+      } else if (VAULT) {
+        const h2 = await writeContractAsync({ address: VAULT, abi: ParityVaultAbi, functionName: 'withdraw', args: [amt, address, address], chainId: chainIds.arbitrumSepolia });
+        setTxHash(h2);
+      }
+    } catch (e) { setTxError(e instanceof Error ? e.message.slice(0, 200) : String(e)); }
+    setBusy(false);
+  };
+  const balanceStr = !isConnected ? 'Connect wallet'
+    : mode === 'deposit' ? (d ? `$${(Number(d.usdcBalance) / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })} USDC` : '…')
+    : (w ? `${(Number(w.shareBalance) / 10 ** w.shareDecimals).toLocaleString(undefined, { maximumFractionDigits: 4 })} shares` : '…');
+  const estimateStr = amt <= 0n ? '—'
+    : mode === 'deposit'
+      ? (d?.previewShares != null && d ? `${(Number(d.previewShares) / 10 ** d.vaultDec).toLocaleString(undefined, { maximumFractionDigits: 4 })} shares` : 'preview failed — over cap?')
+      : (w?.previewShares != null ? `$${(Number(w.previewShares) / 1e6).toLocaleString(undefined, { maximumFractionDigits: 2 })} USDC + shares burned` : 'preview failed — over limit?');
+  const submitLabel = busy ? 'WAITING FOR WALLET…' : needsApproval ? 'APPROVE USDC' : mode === 'deposit' ? 'DEPOSIT' : 'WITHDRAW';
+  return <div><PageHeading eyebrow={`ARBITRUM SEPOLIA / ${title.toUpperCase()}`} title={title} description={mode === 'deposit' ? 'Preview and deposit testnet USDC into the Parity vault.' : 'Redeem shares or withdraw testnet USDC from your Parity position.'} />{!isConnected ? <Unconfigured title="No wallet connected">{`Connect a browser wallet (top right) to ${mode} on Arbitrum Sepolia. You sign every transaction; nothing is custodial.`}</Unconfigured> : <div className="connected-note"><span className="health-dot is-up" /><span>CONNECTED <b className="mono">{address ? shortAddr(address) : ''}</b> · VAULT {VAULT ? `${VAULT.slice(0, 10)}…` : '—'}</span></div>}<div className="transaction-grid"><Panel><div className="panel-head"><div><span className="section-kicker">ORDER TICKET</span><h2>{mode === 'deposit' ? 'Allocate USDC' : 'Request exit'}</h2></div>{blockedReason ? <Tag tone="orange">BLOCKED</Tag> : <Tag tone="green">READY</Tag>}</div><label className="field-label" htmlFor={`${mode}-amount`}>Amount <span>{mode === 'deposit' ? 'USDC' : 'USDC / shares'}</span></label><div className="amount-field"><input id={`${mode}-amount`} inputMode="decimal" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0.00" data-testid={`input-${mode}-amount`} /><button onClick={onMax} disabled={!isConnected} data-testid={`button-${mode}-max`}>MAX</button></div><div className="ticket-detail"><span>Available balance</span><b>{balanceStr}</b></div><div className="ticket-detail"><span>Estimated {mode === 'deposit' ? 'shares' : 'assets'}</span><b>{estimateStr}</b></div><button onClick={send} disabled={!canSubmit} className="button button-primary full-button" data-testid={`button-submit-${mode}`}>{blockedReason ?? submitLabel}</button>{overMax ? <p className="fine-print">Amount exceeds the on-chain limit for your wallet.</p> : txHash ? <p className="fine-print">Submitted: <a className="text-link mono" href={`https://sepolia.arbiscan.io/tx/${txHash}`} target="_blank" rel="noreferrer">{shortAddr(txHash)} <ExternalLink size={12} /></a> — confirm it on Arbiscan; balances refresh automatically.</p> : txError ? <p className="fine-print">Failed: {txError}</p> : <p className="fine-print">{mode === 'withdraw' ? 'Withdrawals are limited by idle vault USDC; your max is read live.' : 'First deposit prompts a USDC approval, then the deposit. Testnet USDC faucet: faucet.circle.com → Arbitrum Sepolia.'}</p>}</Panel><Panel className="transaction-context"><span className="section-kicker">EXECUTION SAFETY</span><h2>{mode === 'deposit' ? 'Before capital enters' : 'Exits remain a priority'}</h2><ul className="check-list">{(mode === 'deposit' ? ['Verify Arbitrum contract and USDC addresses','Read maxDeposit and current NAV freshness','Simulate approval and deposit before wallet prompt','Confirm transaction on Arbiscan'] : ['Read your share balance and maxWithdraw','Check idle vault USDC available for redemption','Simulate the exact exit before wallet prompt','Confirm the resulting transaction on Arbiscan']).map((s,i)=><li key={s}><span>{String(i+1).padStart(2,'0')}</span>{s}<Tag tone="green">LIVE</Tag></li>)}</ul></Panel></div></div>;
 }
 
 function Position() {

@@ -29,7 +29,7 @@ const robinhoodTestnet = {
 } as const satisfies Chain;
 
 const arbSepoliaRpc = env.VITE_ARB_SEPOLIA_RPC ?? 'https://sepolia-rollup.arbitrum.io/rpc';
-const arbClient = createPublicClient({ chain: arbitrumSepolia, transport: http(arbSepoliaRpc) });
+export const arbClient = createPublicClient({ chain: arbitrumSepolia, transport: http(arbSepoliaRpc) });
 const rhClient = createPublicClient({ chain: robinhoodTestnet, transport: http() });
 
 export type VaultState = {
@@ -147,6 +147,92 @@ export function useTestnetTokenPrice() {
 }
 
 export { hyperEvmTestnet, robinhoodTestnet };
+
+export function usdcAddr(): `0x${string}` | null {
+  return (addressesByChainId[chainIds.arbitrumSepolia]?.usdc?.address ?? null) as `0x${string}` | null;
+}
+
+const erc20ReadAbi = parseAbi([
+  'function balanceOf(address) view returns (uint256)',
+  'function allowance(address,address) view returns (uint256)',
+  'function decimals() view returns (uint8)',
+]);
+
+export const erc20WriteAbi = parseAbi([
+  'function approve(address,uint256) returns (bool)',
+  'function balanceOf(address) view returns (uint256)',
+]);
+
+export type DepositData = {
+  usdc: `0x${string}`; maxDeposit: bigint; previewShares: bigint | null;
+  usdcBalance: bigint; allowance: bigint; usdcDecimals: number; vaultDec: number;
+  navStale: boolean; paused: boolean;
+};
+
+export function useDepositData(wallet: `0x${string}` | undefined, amountStr: string) {
+  return useQuery({
+    queryKey: ['deposit-data', 'arb-sepolia', wallet ?? 'disconnected', amountStr],
+    refetchInterval: 15000,
+    retry: 1,
+    enabled: !!wallet,
+    queryFn: async (): Promise<DepositData | null> => {
+      const v = vaultAddr();
+      const u = usdcAddr();
+      if (!v || !u || !wallet) return null;
+      const amt = amountStr.trim() === '' ? 0n : BigInt(Math.floor(Number(amountStr) * 1e6));
+      const [maxDeposit, usdcBalance, allowance, usdcDec, vaultDec, navStale, paused] = (await Promise.all([
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'maxDeposit', args: [wallet] }),
+        arbClient.readContract({ address: u, abi: erc20ReadAbi, functionName: 'balanceOf', args: [wallet] }),
+        arbClient.readContract({ address: u, abi: erc20ReadAbi, functionName: 'allowance', args: [wallet, v] }),
+        arbClient.readContract({ address: u, abi: erc20ReadAbi, functionName: 'decimals' }),
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'decimals' }),
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'navIsStale' }),
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'paused' }),
+      ])) as unknown as [bigint, bigint, bigint, number, bigint, boolean, boolean];
+      let previewShares: bigint | null = null;
+      if (amt > 0n) {
+        try {
+          previewShares = (await arbClient.readContract({
+            address: v, abi: ParityVaultAbi, functionName: 'previewDeposit', args: [amt],
+          })) as unknown as bigint;
+        } catch { previewShares = null; }
+      }
+      return { usdc: u, maxDeposit, previewShares, usdcBalance: usdcBalance, allowance, usdcDecimals: Number(usdcDec), vaultDec: Number(vaultDec), navStale, paused };
+    },
+  });
+}
+
+export type WithdrawData = {
+  maxAssets: bigint; previewShares: bigint | null; shareBalance: bigint; shareDecimals: number;
+};
+
+export function useWithdrawData(wallet: `0x${string}` | undefined, amountStr: string) {
+  return useQuery({
+    queryKey: ['withdraw-data', 'arb-sepolia', wallet ?? 'disconnected', amountStr],
+    refetchInterval: 15000,
+    retry: 1,
+    enabled: !!wallet,
+    queryFn: async (): Promise<WithdrawData | null> => {
+      const v = vaultAddr();
+      if (!v || !wallet) return null;
+      const amt = amountStr.trim() === '' ? 0n : BigInt(Math.floor(Number(amountStr) * 1e6));
+      const [maxAssets, shareBalance, shareDec] = (await Promise.all([
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'maxWithdraw', args: [wallet] }),
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'balanceOf', args: [wallet] }),
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'decimals' }),
+      ])) as unknown as [bigint, bigint, bigint];
+      let previewShares: bigint | null = null;
+      if (amt > 0n) {
+        try {
+          previewShares = (await arbClient.readContract({
+            address: v, abi: ParityVaultAbi, functionName: 'previewWithdraw', args: [amt],
+          })) as unknown as bigint;
+        } catch { previewShares = null; }
+      }
+      return { maxAssets, previewShares, shareBalance, shareDecimals: Number(shareDec) };
+    },
+  });
+}
 
 export type PositionState = { shares: bigint; decimals: number; valueUsd: number | null };
 
