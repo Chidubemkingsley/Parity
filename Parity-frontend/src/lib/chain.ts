@@ -147,3 +147,27 @@ export function useTestnetTokenPrice() {
 }
 
 export { hyperEvmTestnet, robinhoodTestnet };
+
+export type PositionState = { shares: bigint; decimals: number; valueUsd: number | null };
+
+export function usePosition(wallet: `0x${string}` | undefined) {
+  return useQuery({
+    queryKey: ['position', 'arb-sepolia', wallet ?? 'disconnected'],
+    refetchInterval: 30000,
+    retry: 1,
+    enabled: !!wallet,
+    queryFn: async (): Promise<PositionState | null> => {
+      const v = vaultAddr();
+      if (!v || !wallet) return null;
+      const [shares, dec] = (await Promise.all([
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'balanceOf', args: [wallet] }),
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'decimals' }),
+      ])) as unknown as [bigint, bigint];
+      const decimals = Number(dec);
+      const assets = (await arbClient.readContract({
+        address: v, abi: ParityVaultAbi, functionName: 'convertToAssets', args: [shares],
+      })) as unknown as bigint;
+      return { shares, decimals, valueUsd: Number(assets) / 1e6 };
+    },
+  });
+}
