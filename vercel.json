@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm --prefix Parity-frontend run build",
+  "outputDirectory": "Parity-frontend/dist/public",
+  "installCommand": "npm --prefix Parity-frontend install",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

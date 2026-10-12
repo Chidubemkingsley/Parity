@@ -1,0 +1,8 @@
+{
+  "name": "parity-monorepo",
+  "private": true,
+  "scripts": {
+    "build": "npm --prefix Parity-frontend run build",
+    "install": "npm --prefix Parity-frontend install"
+  }
+}
