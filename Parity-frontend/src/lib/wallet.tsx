@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { WagmiProvider, createConfig, http, useAccount, useConnect, useDisconnect } from 'wagmi';
 import { arbitrumSepolia } from 'viem/chains';
 import { injected } from 'wagmi/connectors';
@@ -6,22 +6,24 @@ import { hyperEvmTestnet, robinhoodTestnet } from './chain';
 
 const env = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {};
 
-export const wagmiConfig = createConfig({
-  chains: [arbitrumSepolia, hyperEvmTestnet, robinhoodTestnet],
-  connectors: [injected()],
-  transports: {
-    [arbitrumSepolia.id]: http(env.VITE_ARB_SEPOLIA_RPC ?? 'https://sepolia-rollup.arbitrum.io/rpc'),
-    [hyperEvmTestnet.id]: http(env.VITE_HYPEREVM_TESTNET_RPC ?? 'https://rpc.hyperliquid-testnet.xyz/evm'),
-    [robinhoodTestnet.id]: http(env.VITE_RH_TESTNET_RPC ?? 'https://rpc.testnet.chain.robinhood.com'),
-  },
-});
-
 export function shortAddr(a: string) {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
 export function WalletProvider({ children }: { children: ReactNode }) {
-  return <WagmiProvider config={wagmiConfig}>{children}</WagmiProvider>;
+  // Lazy: a throw here stays inside React (error boundary) instead of blanking the page at import time.
+  const [config] = useState(() =>
+    createConfig({
+      chains: [arbitrumSepolia, hyperEvmTestnet, robinhoodTestnet],
+      connectors: [injected()],
+      transports: {
+        [arbitrumSepolia.id]: http(env.VITE_ARB_SEPOLIA_RPC ?? 'https://sepolia-rollup.arbitrum.io/rpc'),
+        [hyperEvmTestnet.id]: http(env.VITE_HYPEREVM_TESTNET_RPC ?? 'https://rpc.hyperliquid-testnet.xyz/evm'),
+        [robinhoodTestnet.id]: http(env.VITE_RH_TESTNET_RPC ?? 'https://rpc.testnet.chain.robinhood.com'),
+      },
+    }),
+  );
+  return <WagmiProvider config={config}>{children}</WagmiProvider>;
 }
 
 export function ConnectButton() {
