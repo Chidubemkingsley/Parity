@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Link, Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 import { useHealthCheck, useQueryHyperliquidMarket, type HyperliquidQueryResponse } from '@/lib/api-client';
@@ -6,7 +6,7 @@ import { Activity, ArrowDownToLine, ArrowLeftRight, ArrowUpRight, BookOpen, Boxe
 import { ErrorBoundary } from '@/components/error-boundary';
 import { useVaultState, useRegistryPairs, useTestnetTokenPrice, usePosition, useDepositData, useWithdrawData, useCostBasis, useActivity, useRoundTrips, useNavReports, useRiskParams, useAdminRoles, arbClient, erc20WriteAbi } from '@/lib/chain';
 import { addressesByChainId, chainIds, isContractConfigured } from '@/lib/addresses';
-import { ParityVaultAbi } from '@/lib/abis';
+import { ParityVaultAbi, PairRegistryAbi } from '@/lib/abis';
 import { WalletProvider, ConnectButton, shortAddr } from '@/lib/wallet';
 import { useAccount, useWriteContract } from 'wagmi';
 
@@ -398,6 +398,120 @@ function Keeper() {
   return <div><PageHeading eyebrow="OPERATIONS / HYPEREVM + ARBITRUM" title="Keeper status" description="Executor, capital flow, NAV report, and keeper decision observability on the testnet deployment." /><Unconfigured title="Testnet reads — no keeper service feed">{'Executor, capital and journal state below are live on-chain. The decision sample is the last recorded dry-run (Oct 12); no keeper service posts to this UI.'}</Unconfigured><div className="metric-grid"><Metric label="Executor" value={v ? shortAddr(v.executor) : 'Unavailable'} note="vault.executor · live" /><Metric label="Deployed capital" value={v ? fmtUsdc(v.deployed) : 'Unavailable'} note={`idle ${v ? fmtUsdc(v.idle) : '—'} · live`} /><Metric label="Last NAV report" value={lastNav && lastNav.timestamp ? new Date(lastNav.timestamp * 1000).toLocaleString() : (nav.data ? 'None yet' : 'Unavailable')} note="DeployedReported · live scan" /><Metric label="Last round trip" value={lastTrip ? `#${lastTrip.id.toString()}` : (trips.data ? 'None yet' : 'Unavailable')} note="RoundTripRecorded · live scan" /></div><Panel className="large-panel"><div className="panel-head"><div><span className="section-kicker">LATEST DECISION · RECORDED SAMPLE</span><h2>Dry-run output · Oct 12</h2></div><Tag tone="green">mTSLA TESTNET</Tag></div><div className="table-scroll"><table><thead><tr><th>FIELD</th><th>VALUE</th></tr></thead><tbody>{[['mode', 'DRY-RUN'], ['tokenPx', '378.97 mUSDG'], ['perpMid', '378.97 (xyz:TSLA testnet)'], ['basisBps', '+0.00'], ['netEdgeBps', '−118.08'], ['sizeUsd', '50'], ['blockers', 'net edge below minimum → No trade']].map(([k, val]) => <tr key={k}><td className="asset-cell">{k}</td><td className="mono">{val}</td></tr>)}</tbody></table></div><p className="fine-print">Recorded from scripts/keeper.ts --pair mTSLA on Oct 12, 2026 (see docs/TESTNET.md). Keeper operations—capital movement, NAV reports, and round-trip recording—belong in an audited keeper script, not a public transaction surface.</p></Panel></div>;
 }
 
+function ParamField({ label, unit, value, onChange, placeholder }: { label: string; unit: string; value: string; onChange: (s: string) => void; placeholder: string }) {
+  return <label className="calc-field"><span>{label} <small>({unit})</small></span><input type="number" step="any" min="0" value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} /></label>;
+}
+
+function ParamsForm({ vault, wallet }: { vault: `0x${string}`; wallet: `0x${string}` }) {
+  const rp = useRiskParams();
+  const rd = rp.data ?? null;
+  const [f, setF] = useState({ fee: '', deploy: '', navMove: '', interval: '', age: '', cap: '' });
+  const [sim, setSim] = useState<string | null>(null);
+  const [tx, setTx] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { writeContractAsync } = useWriteContract();
+  const set = (k: keyof typeof f) => (e: ChangeEvent<HTMLInputElement>) => { setF({ ...f, [k]: e.target.value }); setSim(null); setTx(null); };
+  const loadLive = () => {
+    if (!rd) return;
+    setF({ fee: rd.performanceFeeBps.toString(), deploy: rd.maxDeployBps.toString(), navMove: rd.maxNavMoveBps.toString(), interval: rd.minReportInterval.toString(), age: rd.maxNavAge.toString(), cap: (Number(rd.depositCap) / 1e6).toString() });
+  };
+  const p = (() => {
+    const nums = [f.fee, f.deploy, f.navMove, f.interval, f.age].map(s => Math.floor(Number(s)));
+    const capN = Number(f.cap);
+    if (!nums.every(n => Number.isFinite(n) && n >= 0) || !Number.isFinite(capN) || capN < 0) return null;
+    return { fee: nums[0], deploy: nums[1], navMove: nums[2], interval: nums[3], age: nums[4], cap: BigInt(Math.floor(capN * 1e6)) };
+  })();
+  const human = p ? `fee ${(p.fee / 100).toFixed(2)}% · deploy ≤ ${(p.deploy / 100).toFixed(2)}% of NAV · NAV move ≤ ${(p.navMove / 100).toFixed(2)}% · reports every ≥${p.interval}s, NAV older than ${p.age}s rejected · cap $${(Number(p.cap) / 1e6).toLocaleString()}` : null;
+  const warnings = p ? [
+    p.fee > 3000 ? 'fee exceeds 3,000 bps contract maximum — will revert' : null,
+    Number(p.cap) === 0 ? 'cap of 0 bricks all deposits until raised' : null,
+    p.age === 0 ? 'max age 0 rejects every report' : null,
+  ].filter(Boolean) as string[] : [];
+  const onSimulate = async () => {
+    if (!p) return; setErr(null);
+    try {
+      await arbClient.simulateContract({ address: vault, abi: ParityVaultAbi, functionName: 'setParams', args: [p.fee, p.deploy, p.navMove, p.interval, p.age, p.cap], account: wallet });
+      setSim('Simulation passed — no revert. Review the summary, then sign.');
+    } catch (e) { setErr('Simulation reverted: ' + (e instanceof Error ? e.message.slice(0, 220) : String(e))); setSim(null); }
+  };
+  const onSign = async () => {
+    if (!p || !sim) return;
+    setBusy(true); setErr(null); setTx(null);
+    try {
+      const h = await writeContractAsync({ address: vault, abi: ParityVaultAbi, functionName: 'setParams', args: [p.fee, p.deploy, p.navMove, p.interval, p.age, p.cap], chainId: chainIds.arbitrumSepolia });
+      setTx(h);
+    } catch (e) { setErr(e instanceof Error ? e.message.slice(0, 200) : String(e)); }
+    setBusy(false);
+  };
+  return <div>
+    <div className="calc-fields">
+      <ParamField label="Performance fee" unit="bps" value={f.fee} onChange={v => setF({ ...f, fee: v })} placeholder={rd ? rd.performanceFeeBps.toString() : 'e.g. 2000'} />
+      <ParamField label="Max deploy share" unit="bps of NAV" value={f.deploy} onChange={v => setF({ ...f, deploy: v })} placeholder={rd ? rd.maxDeployBps.toString() : 'e.g. 8000'} />
+      <ParamField label="NAV move limit" unit="bps" value={f.navMove} onChange={v => setF({ ...f, navMove: v })} placeholder={rd ? rd.maxNavMoveBps.toString() : 'e.g. 500'} />
+      <ParamField label="Min report interval" unit="seconds" value={f.interval} onChange={v => setF({ ...f, interval: v })} placeholder={rd ? rd.minReportInterval.toString() : 'e.g. 3600'} />
+      <ParamField label="Max NAV age" unit="seconds" value={f.age} onChange={v => setF({ ...f, age: v })} placeholder={rd ? rd.maxNavAge.toString() : 'e.g. 86400'} />
+      <ParamField label="Deposit cap" unit="USDC" value={f.cap} onChange={v => setF({ ...f, cap: v })} placeholder={rd ? (Number(rd.depositCap) / 1e6).toString() : 'e.g. 10000'} />
+    </div>
+    {human ? <p className="fine-print">This means: {human}.</p> : <p className="fine-print">Fill all six fields (placeholders show live values).</p>}
+    {warnings.map(w => <p className="fine-print" key={w}>⚠ {w}.</p>)}
+    <div className="hero-actions"><button onClick={loadLive} disabled={!rd} className="button button-quiet">LOAD LIVE VALUES</button><button onClick={onSimulate} disabled={!p} className="button button-secondary">1 · SIMULATE</button><button onClick={onSign} disabled={!p || !sim || busy} className="button button-primary">{busy ? 'WAITING FOR WALLET…' : '2 · SIGN SETPARAMS'}</button></div>
+    {sim ? <p className="fine-print">{sim}</p> : null}
+    {tx ? <p className="fine-print">Submitted: <a className="text-link mono" href={`https://sepolia.arbiscan.io/tx/${tx}`} target="_blank" rel="noreferrer">{shortAddr(tx)} <ExternalLink size={12} /></a></p> : null}
+    {err ? <p className="fine-print">Failed: {err}</p> : null}
+  </div>;
+}
+
+function UpsertForm({ registry, wallet }: { registry: `0x${string}`; wallet: `0x${string}` }) {
+  const [f, setF] = useState({ symbol: '', stock: '', asset: '', szDec: '', maxNot: '', minEdge: '', enabled: true });
+  const [sim, setSim] = useState<string | null>(null);
+  const [tx, setTx] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { writeContractAsync } = useWriteContract();
+  const set = (k: keyof Omit<typeof f, 'enabled'>) => (e: ChangeEvent<HTMLInputElement>) => { setF({ ...f, [k]: e.target.value }); setSim(null); setTx(null); };
+  const fillMtsla = () => setF({ symbol: 'mTSLA', stock: '0xd4417bc34cd728a581b0e1dd03839c6e56fca5cf', asset: '750001', szDec: '3', maxNot: '50', minEdge: '20', enabled: true });
+  const p = (() => {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(f.stock) || f.symbol.trim() === '') return null;
+    const asset = Math.floor(Number(f.asset)), szDec = Math.floor(Number(f.szDec)), minEdge = Math.floor(Number(f.minEdge));
+    const maxNotN = Number(f.maxNot);
+    if (![asset, szDec, minEdge].every(n => Number.isFinite(n) && n >= 0) || !Number.isFinite(maxNotN) || maxNotN <= 0) return null;
+    return { symbol: f.symbol.trim(), stock: f.stock as `0x${string}`, asset, szDec, maxNot: BigInt(Math.floor(maxNotN * 1e6)), minEdge, enabled: f.enabled };
+  })();
+  const onSimulate = async () => {
+    if (!p) return; setErr(null);
+    try {
+      await arbClient.simulateContract({ address: registry, abi: PairRegistryAbi, functionName: 'upsertPair', args: [{ symbol: p.symbol, stockToken: p.stock, hlAsset: p.asset, hlSzDecimals: p.szDec, maxNotional: p.maxNot, minEdgeBps: p.minEdge, enabled: p.enabled }], account: wallet });
+      setSim('Simulation passed — no revert. Review, then sign.');
+    } catch (e) { setErr('Simulation reverted: ' + (e instanceof Error ? e.message.slice(0, 220) : String(e))); setSim(null); }
+  };
+  const onSign = async () => {
+    if (!p || !sim) return;
+    setBusy(true); setErr(null); setTx(null);
+    try {
+      const h = await writeContractAsync({ address: registry, abi: PairRegistryAbi, functionName: 'upsertPair', args: [{ symbol: p.symbol, stockToken: p.stock, hlAsset: p.asset, hlSzDecimals: p.szDec, maxNotional: p.maxNot, minEdgeBps: p.minEdge, enabled: p.enabled }], chainId: chainIds.arbitrumSepolia });
+      setTx(h);
+    } catch (e) { setErr(e instanceof Error ? e.message.slice(0, 200) : String(e)); }
+    setBusy(false);
+  };
+  return <div>
+    <div className="calc-fields">
+      <ParamField label="Symbol" unit="text" value={f.symbol} onChange={v => setF({ ...f, symbol: v })} placeholder="mTSLA" />
+      <ParamField label="Stock token" unit="address" value={f.stock} onChange={v => setF({ ...f, stock: v })} placeholder="0xd441…" />
+      <ParamField label="HL asset id" unit="uint32" value={f.asset} onChange={v => setF({ ...f, asset: v })} placeholder="750001" />
+      <ParamField label="HL sz decimals" unit="uint8" value={f.szDec} onChange={v => setF({ ...f, szDec: v })} placeholder="3" />
+      <ParamField label="Max notional" unit="USDC" value={f.maxNot} onChange={v => setF({ ...f, maxNot: v })} placeholder="50" />
+      <ParamField label="Min edge" unit="bps" value={f.minEdge} onChange={v => setF({ ...f, minEdge: v })} placeholder="20" />
+    </div>
+    <label className="field-label">Enabled <input type="checkbox" checked={f.enabled} onChange={e => setF({ ...f, enabled: e.target.checked })} /></label>
+    {p ? <p className="fine-print">Registers {p.symbol} → {p.stock.slice(0, 10)}… · HL asset {p.asset} · cap ${(Number(p.maxNot) / 1e6).toLocaleString()} · min edge {p.minEdge} bps · {p.enabled ? 'enabled' : 'disabled'}. HL asset id formula still memory-derived — proven on first live short.</p> : <p className="fine-print">Fill all fields with a valid 0x token address.</p>}
+    <div className="hero-actions"><button onClick={fillMtsla} className="button button-quiet">FILL mTSLA TESTNET</button><button onClick={onSimulate} disabled={!p} className="button button-secondary">1 · SIMULATE</button><button onClick={onSign} disabled={!p || !sim || busy} className="button button-primary">{busy ? 'WAITING FOR WALLET…' : '2 · SIGN UPSERT'}</button></div>
+    {sim ? <p className="fine-print">{sim}</p> : null}
+    {tx ? <p className="fine-print">Submitted: <a className="text-link mono" href={`https://sepolia.arbiscan.io/tx/${tx}`} target="_blank" rel="noreferrer">{shortAddr(tx)} <ExternalLink size={12} /></a> — the Registry page updates automatically.</p> : null}
+    {err ? <p className="fine-print">Failed: {err}</p> : null}
+  </div>;
+}
+
 function Admin() {
   const { address, isConnected } = useAccount();
   const roles = useAdminRoles(address);
@@ -422,8 +536,8 @@ function Admin() {
   const badge = (held: boolean | null) => held === null ? <Tag>CHECKING…</Tag> : held ? <Tag tone="green">YOU HOLD THIS ROLE</Tag> : <Tag tone="orange">NOT HELD</Tag>;
   return <div><PageHeading eyebrow="ACCESS CONTROL / ARBITRUM SEPOLIA" title="Admin console" description="Live role state for the connected wallet on the testnet deployment. Guardian pause is enabled; other writes stay UI-disabled pre-audit." />{!isConnected ? <Unconfigured title="No wallet connected">{'Connect a browser wallet (top right) to check your roles against the vault and registry.'}</Unconfigured> : <div className="connected-note"><span className="health-dot is-up" /><span>CONNECTED <b className="mono">{address ? shortAddr(address) : ''}</b> · {r ? `ADMIN ${r.isAdmin ? '✓' : '✗'} · GUARDIAN ${r.isGuardian ? '✓' : '✗'} · KEEPER ${r.isKeeper ? '✓' : '✗'} · REGISTRY OWNER ${r.isRegistryOwner ? '✓' : '✗'}` : 'CHECKING ROLES…'}</span></div>}<div className="risk-alert"><Shield size={19}/><div><strong>Multisig recommended for privileged roles.</strong><span>Testnet roles sit on a single key (verified on-chain). Mainnet admin, guardian, and registry ownership should use a reviewed multisig. Never enable a write before verifying chain, address, ABI, simulation, and role.</span></div></div><div className="admin-grid">
       <Panel><div className="panel-head"><div><span className="section-kicker">GUARDIAN ROLE</span><h2>Pause vault</h2></div>{badge(r?.isGuardian ?? null)}</div><p>Blocks deposits and capital deployment. Reversible at any time.</p>{r?.isGuardian ? <button onClick={onPauseToggle} disabled={pbusy || paused === null} className="button button-secondary" data-testid="button-admin-guardian">{pbusy ? 'WAITING FOR WALLET…' : paused ? 'UNPAUSE VAULT' : 'PAUSE VAULT'}</button> : <button disabled className="button button-disabled" data-testid="button-admin-guardian">CONTROL DISABLED</button>}{ptx ? <p className="fine-print">Submitted: <a className="text-link mono" href={`https://sepolia.arbiscan.io/tx/${ptx}`} target="_blank" rel="noreferrer">{shortAddr(ptx)} <ExternalLink size={12} /></a></p> : null}{perr ? <p className="fine-print">Failed: {perr}</p> : null}</Panel>
-      <Panel><div className="panel-head"><div><span className="section-kicker">ADMIN ROLE</span><h2>Protocol parameters</h2></div>{badge(r?.isAdmin ?? null)}</div><p>Would update fees, deployment limits, NAV bounds, and deposit cap.</p><button disabled className="button button-disabled" data-testid="button-admin-admin">CONTROL DISABLED</button><p className="fine-print">Parameter writes intentionally UI-disabled pre-audit. Current values are live on the Risk page.</p></Panel>
-      <Panel><div className="panel-head"><div><span className="section-kicker">REGISTRY OWNER ROLE</span><h2>Pair configuration</h2></div>{badge(r?.isRegistryOwner ?? null)}</div><p>Would register tokens, markets, limits, and enabled state.</p><button disabled className="button button-disabled" data-testid="button-admin-registry-owner">CONTROL DISABLED</button><p className="fine-print">Register via upsertPair on Arbiscan (see Runbook) until a reviewed UI flow ships.</p></Panel>
+      <Panel><div className="panel-head"><div><span className="section-kicker">ADMIN ROLE</span><h2>Protocol parameters</h2></div>{badge(r?.isAdmin ?? null)}</div><p>Update fees, deployment limits, NAV bounds, and deposit cap — simulated before signing, human summary shown.</p>{r?.isAdmin && VAULT && address ? <ParamsForm vault={VAULT} wallet={address} /> : <><button disabled className="button button-disabled" data-testid="button-admin-admin">CONTROL DISABLED</button><p className="fine-print">Admin role required — connect the admin wallet to unlock the simulated write flow. Current values are live on the Risk page.</p></>}</Panel>
+      <Panel><div className="panel-head"><div><span className="section-kicker">REGISTRY OWNER ROLE</span><h2>Pair configuration</h2></div>{badge(r?.isRegistryOwner ?? null)}</div><p>Register tokens, markets, limits, and enabled state — simulated before signing.</p>{(() => { const rd2 = addressesByChainId[chainIds.arbitrumSepolia]?.registry; const REG = rd2 && isContractConfigured(rd2) ? rd2.address : null; return r?.isRegistryOwner && REG && address ? <UpsertForm registry={REG} wallet={address} /> : (<><button disabled className="button button-disabled" data-testid="button-admin-registry-owner">CONTROL DISABLED</button><p className="fine-print">Registry-owner role required — or register via upsertPair on Arbiscan (see Runbook).</p></>); })()}</Panel>
     </div></div>;
 }
 
