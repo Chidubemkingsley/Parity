@@ -1,0 +1,23 @@
+{
+  "name": "parity-scripts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "measure": "tsx measure-gap.ts",
+    "discover": "tsx discover-tokens.ts",
+    "pools": "tsx find-pools.ts",
+    "keeper": "tsx keeper.ts"
+  },
+  "dependencies": {
+    "@nktkas/hyperliquid": "^0.33.3",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
