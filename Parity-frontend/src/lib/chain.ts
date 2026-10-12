@@ -148,6 +148,42 @@ export function useTestnetTokenPrice() {
 
 export { hyperEvmTestnet, robinhoodTestnet };
 
+const ERC4626_EVENTS = parseAbi([
+  'event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares)',
+  'event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)',
+]);
+
+export type CostBasis = { deposits: bigint; withdrawals: bigint; net: bigint; txs: number } | null;
+
+/** Cost basis = lifetime USDC in − lifetime USDC out, scanned from vault logs. No indexer needed. */
+export function useCostBasis(wallet: `0x${string}` | undefined) {
+  return useQuery({
+    queryKey: ['cost-basis', 'arb-sepolia', wallet ?? 'disconnected'],
+    refetchInterval: 120000,
+    retry: 1,
+    enabled: !!wallet,
+    queryFn: async (): Promise<CostBasis> => {
+      const dep = addressesByChainId[chainIds.arbitrumSepolia]?.vault;
+      if (!dep || !isContractConfigured(dep) || !wallet) return null;
+      const v = dep.address;
+      const latest = await arbClient.getBlockNumber();
+      const from = dep.deployBlock ?? latest;
+      let deposits = 0n, withdrawals = 0n, txs = 0;
+      const STEP = 100000n;
+      for (let s = from; s <= latest; s += STEP) {
+        const e = s + STEP - 1n > latest ? latest : s + STEP - 1n;
+        const [ds, ws] = await Promise.all([
+          arbClient.getLogs({ address: v, events: [ERC4626_EVENTS[0]], args: { owner: wallet }, fromBlock: s, toBlock: e }),
+          arbClient.getLogs({ address: v, events: [ERC4626_EVENTS[1]], args: { owner: wallet }, fromBlock: s, toBlock: e }),
+        ]);
+        for (const l of ds) { deposits += (l.args as unknown as { assets: bigint }).assets; txs++; }
+        for (const l of ws) { withdrawals += (l.args as unknown as { assets: bigint }).assets; txs++; }
+      }
+      return { deposits, withdrawals, net: deposits - withdrawals, txs };
+    },
+  });
+}
+
 export function usdcAddr(): `0x${string}` | null {
   return (addressesByChainId[chainIds.arbitrumSepolia]?.usdc?.address ?? null) as `0x${string}` | null;
 }
