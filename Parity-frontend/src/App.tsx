@@ -83,24 +83,127 @@ function Shell({ children }: { children: ReactNode }) {
   </div>;
 }
 
+const EXPLORER = {
+  arbSepolia: 'https://sepolia.arbiscan.io',
+  hyperEvmTestnet: 'https://testnet.purrsec.com',
+  robinhoodTestnet: 'https://explorer.testnet.chain.robinhood.com',
+} as const;
+
+function AddrLink({ base, address, label }: { base: string; address: string; label?: string }) {
+  const short = label ?? `${address.slice(0, 10)}…${address.slice(-6)}`;
+  return <a className="text-link mono" href={`${base}/address/${address}`} target="_blank" rel="noreferrer">{short} <ExternalLink size={12} /></a>;
+}
+
+function TxLink({ base, hash }: { base: string; hash: string }) {
+  return <a className="text-link mono" href={`${base}/tx/${hash}`} target="_blank" rel="noreferrer">{`${hash.slice(0, 10)}…${hash.slice(-6)}`} <ExternalLink size={12} /></a>;
+}
+
+const MEASURED_ROWS: [string, string, string, string, string][] = [
+  ['TSLA', '382.413', '382.840', '+11.2', '−67.6'],
+  ['NVDA', '229.445', '228.645', '−34.9', '−114.0'],
+  ['AAPL', '336.961', '337.515', '+16.5', '−64.4'],
+  ['AMZN', '262.512', '261.885', '−23.9', '−102.5'],
+  ['COIN', '181.387', '181.340', '−2.6', '−32.0'],
+];
+
+function Faq({ q, a }: { q: string; a: string }) {
+  const [open, setOpen] = useState(false);
+  return <div className="faq-item"><button className="faq-q" onClick={() => setOpen(!open)} aria-expanded={open}><span>{q}</span><span className="mono">{open ? '−' : '+'}</span></button>{open && <p className="faq-a">{a}</p>}</div>;
+}
+
 function Overview() {
+  const vault = useVaultState();
+  const registry = useRegistryPairs();
+  const tokenPx = useTestnetTokenPrice();
+  const v = vault.data ?? null;
+  const pairs = registry.data ?? null;
   return <div className="overview-page">
+    {/* HERO */}
     <div className="hero-block terminal-grid">
       <span className="signal-orb orange" /><span className="signal-orb green" />
-      <div className="hero-topline"><Tag tone="orange">PROTOCOL INTERFACE / PRE-DEPLOYMENT</Tag><span className="mono hero-index">SYS.001&nbsp; / &nbsp;ARBITRUM</span></div>
-      <div className="hero-copy"><p className="eyebrow">A BASIS STRATEGY, UNDER OBSERVATION</p><h1 className="display">Measure first.<br /><em>Deploy only</em> with evidence.</h1><p className="hero-lede">Parity is an ERC-4626-style vault interface for a proposed tokenized-equity basis strategy. Testnet deployments exist on Arbitrum Sepolia, HyperEVM testnet, and Robinhood testnet — there is no mainnet deployment, no live trading, and no verified edge.</p>
-        <div className="hero-actions"><Link href="/monitor" className="button button-primary" data-testid="link-open-monitor"><Radar size={15} /> OPEN MARKET MONITOR <ArrowUpRight size={14} /></Link><Link href="/strategy" className="button button-quiet" data-testid="link-strategy-method">READ THE METHOD <ArrowUpRight size={14} /></Link></div>
+      <div className="hero-topline"><Tag tone="orange">DELTA-NEUTRAL BASIS VAULT · TESTNET LIVE</Tag><span className="mono hero-index">SYS.001&nbsp; / &nbsp;3 CHAINS</span></div>
+      <div className="hero-copy"><p className="eyebrow">TOKENIZED EQUITIES · ROBINHOOD CHAIN × HYPERLIQUID</p><h1 className="display">The weekend basis trade,<br /><em>measured</em> before it&apos;s traded.</h1><p className="hero-lede">US stocks sleep on weekends. Robinhood Stock Tokens and Hyperliquid equity perps don&apos;t — and they disagree. Parity is an ERC-4626 vault that buys the token, shorts the perp, and harvests the convergence. Every claim on this page is backed by a live testnet deployment or a measured number. Nothing is simulated, nothing is backtested into existence.</p>
+        <div className="hero-actions"><Link href="/monitor" className="button button-primary" data-testid="link-open-monitor"><Radar size={15} /> OPEN MARKET MONITOR <ArrowUpRight size={14} /></Link><Link href="/docs" className="button button-quiet" data-testid="link-strategy-method">READ THE TESTNET RECORD <ArrowUpRight size={14} /></Link></div>
       </div>
-      <div className="hero-stamp"><span>RESEARCH</span><strong>MODE</strong><small>NOT LIVE</small></div>
-      <div className="hero-bottom"><span>01 / OBSERVE</span><span>02 / VALIDATE</span><span>03 / CONFIGURE</span><b>NO CONTRACT STATE AVAILABLE</b></div>
+      <div className="hero-stamp"><span>STATUS</span><strong>TESTNET</strong><small>NOT LIVE · UNAUDITED</small></div>
+      <div className="hero-bottom"><span>22 FOUNDRY TESTS PASSING</span><span>3 TESTNET DEPLOYMENTS</span><span>60 BPS MEASURED ROUND-TRIP</span><b>STRATEGY UNPROVEN ON WEEKDAYS</b></div>
     </div>
-    <div className="notice-row"><span className="notice-symbol"><ShieldAlert size={17} /></span><div><strong>Nothing here is trading.</strong><span>Testnet addresses and compiled ABIs are configured in src/lib (verified against live bytecode); mainnet addresses are intentionally unset. Vault state, transaction controls, and historical performance are unavailable until mainnet verification.</span></div><Tag tone="orange">AUDIT BOUNDARY</Tag></div>
+
+    {/* LIVE METRICS */}
+    <div className="metric-grid">
+      <Metric label="Vault TVL (testnet)" value={v ? fmtUsdc(v.totalAssets) : '…'} note="ParityVault · Arbitrum Sepolia · live" accent />
+      <Metric label="Pool price mTSLA" value={tokenPx.data ? `$${displayNumber(tokenPx.data)}` : '…'} note="V4 pool · Robinhood testnet · live" />
+      <Metric label="Pairs registered" value={pairs ? String(pairs.length) : '…'} note="PairRegistry · live on-chain count" />
+      <Metric label="Round trips" value={v ? String(v.roundTrips) : '…'} note="RoundTripRecorded events · live" />
+    </div>
+
+    {/* PROBLEM */}
+    <div className="section-title-row"><div><span className="section-kicker">THE PROBLEM</span><h2 className="display">Fair value goes home. Prices don&apos;t.</h2></div><span className="mono subdued">24/7 VENUES · NO ANCHOR</span></div>
     <div className="overview-grid">
-      <Panel className="overview-market"><div className="panel-head"><div><span className="section-kicker">01 / OBSERVATION</span><h2>Market monitor</h2></div><Tag tone="green">LIVE SOURCE · HYPERLIQUID</Tag></div><p>Read current perp market context from Hyperliquid's public info API. Token prices, pool state, basis, and strategy edge cannot be calculated without a configured Robinhood Chain pair.</p><Link href="/monitor" className="text-link" data-testid="link-monitor-card">Explore current markets <ArrowUpRight size={14} /></Link><div className="data-bars" aria-hidden="true"><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /></div></Panel>
-      <Panel className="overview-state"><div className="panel-head"><div><span className="section-kicker">02 / DEPLOYMENT</span><h2>Vault state</h2></div><Tag>UNCONFIGURED</Tag></div><div className="state-lines"><div><span>Vault address</span><b>—</b></div><div><span>Registry address</span><b>—</b></div><div><span>Strategy status</span><b className="orange-text">NOT DEPLOYED</b></div></div><Link href="/vault" className="text-link" data-testid="link-vault-card">Vault availability <ArrowUpRight size={14} /></Link></Panel>
+      <Panel className="overview-market"><div className="panel-head"><div><span className="section-kicker">VENUE ONE</span><h2>Stock Tokens, thinly traded</h2></div></div><p>Robinhood Stock Tokens (TSLA, NVDA, AAPL…) trade around the clock in fragmented Uniswap pools. On mainnet the TSLA/USDG 0.3% pool holds about $1.5M — deep enough to trade, thin enough to drift from fair value when the underlying market is shut.</p><p className="fine-print">Verified live: token contracts, decimals, and pool liquidity read directly from Robinhood Chain (see scripts/config/pairs.json).</p></Panel>
+      <Panel className="overview-state"><div className="panel-head"><div><span className="section-kicker">VENUE TWO</span><h2>Equity perps set their own weekend price</h2></div></div><p>Hyperliquid HIP-3 equity perps (TradeXYZ <span className="mono">xyz:</span> markets) also trade 24/7, with funding and their own order books. With no external anchor on weekends, the two venues can disagree by more than the round-trip cost — that disagreement is the trade.</p><p className="fine-print">Verified live: xyz dex exists on mainnet and testnet; metaAndAssetCtxs + l2Book shapes confirmed against our client code.</p></Panel>
     </div>
-    <div className="section-title-row"><div><span className="section-kicker">SYSTEM MAP</span><h2 className="display">An auditable path to action.</h2></div><span className="mono subdued">NO PERFORMANCE CLAIMS</span></div>
-    <div className="process-grid">{[['A','Measure the gap','Current Hyperliquid market context is observable. Robinhood token and pool inputs are not configured.','/monitor'],['B','Model the costs','Enter your own assumptions to inspect a possible edge. A calculator output is not evidence of profitability.','/strategy'],['C','Verify deployment','Contract reads and every write remain disabled until addresses and ABIs are verified.','/docs']].map(([n,title,copy,href])=><Link href={href} className="process-step" key={n} data-testid={`link-process-${n.toLowerCase()}`}><span className="process-n">{n}</span><h3>{title}</h3><p>{copy}</p><span className="step-arrow"><ArrowUpRight size={14} /></span></Link>)}</div>
+
+    {/* HOW IT WORKS */}
+    <div className="section-title-row"><div><span className="section-kicker">HOW IT WORKS</span><h2 className="display">Four steps. All on-chain. All checkable.</h2></div><span className="mono subdued">CONTRACTS + KEEPER</span></div>
+    <div className="process-grid">
+      <div className="process-step"><span className="process-n">1</span><h3>Measure the gap</h3><p><span className="mono">measure-gap.ts</span> samples token price vs perp mid, subtracts pool fees, Hyperliquid taker fees, half-spreads, funding carry, and gas. Output is GO only if ≥25% of samples clear costs — otherwise PIVOT. Weekday verdict so far: PIVOT.</p></div>
+      <div className="process-step"><span className="process-n">2</span><h3>Deposit into the vault</h3><p>USDC enters the ERC-4626 <span className="mono">ParityVault</span> on Arbitrum (deposit cap, pause guardian, high-water-mark performance fee). Capital splits into idle and deployed; the keeper draws deployed capital via <span className="mono">sendToExecutor</span>.</p></div>
+      <div className="process-step"><span className="process-n">3</span><h3>Hedge both legs</h3><p>The keeper buys the Stock Token on Robinhood Chain and shorts the same notional on the HIP-3 perp. One direction only — positive basis. Size is the minimum of pair cap, pool depth, and book depth. Exit at ≤10 bps convergence or timeout.</p></div>
+      <div className="process-step"><span className="process-n">4</span><h3>Report and journal</h3><p>NAV is keeper-attested with evidence hashes and freshness bounds (<span className="mono">reportDeployed</span>). Every round trip is journaled with pair id, notional, edge, and both tx references (<span className="mono">RoundTripRecorded</span>).</p></div>
+    </div>
+
+    {/* MEASURED EVIDENCE */}
+    <div className="section-title-row"><div><span className="section-kicker">MEASURED EVIDENCE · OCT 12, WEEKDAY</span><h2 className="display">Real numbers, including the bad ones.</h2></div><span className="mono subdued">COST HURDLE ≈ 82 BPS</span></div>
+    <Panel className="large-panel"><div className="panel-head"><div><span className="section-kicker">MAINNET SNAPSHOT</span><h2>Token vs perp, net of everything</h2></div><Tag tone="orange">PIVOT</Tag></div>
+      <div className="table-scroll"><table><thead><tr><th>PAIR</th><th>TOKEN PX</th><th>PERP MID</th><th>BASIS (BPS)</th><th>NET EDGE (BPS)</th></tr></thead><tbody>{MEASURED_ROWS.map(r => <tr key={r[0]}><td className="asset-cell"><span className="asset-bullet" />{r[0]}</td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td><td className="orange-text">{r[4]}</td></tr>)}</tbody></table></div>
+      <p className="fine-print">Live reads from Robinhood Chain pools and Hyperliquid xyz perps while US markets were open. Weekday gaps don&apos;t clear the ~82 bps round-trip cost — exactly what the thesis predicts. The edge, if it exists, lives on weekends. Full samples in <span className="mono">scripts/out/</span>.</p>
+    </Panel>
+
+    {/* ARCHITECTURE */}
+    <div className="section-title-row"><div><span className="section-kicker">DEPLOYED ARCHITECTURE</span><h2 className="display">Every address below is on-chain now.</h2></div><span className="mono subdued">CLICK TO VERIFY</span></div>
+    <Panel className="large-panel"><div className="panel-head"><div><span className="section-kicker">TESTNET DEPLOYMENTS</span><h2>Contracts + mock market</h2></div><Tag tone="green">SELECTORS CHECKED ON-CHAIN</Tag></div>
+      <div className="table-scroll"><table><thead><tr><th>CONTRACT</th><th>CHAIN</th><th>ADDRESS</th><th>ROLE</th></tr></thead><tbody>
+        <tr><td className="asset-cell">ParityVault</td><td>Arbitrum Sepolia</td><td><AddrLink base={EXPLORER.arbSepolia} address="0xb0e660108571b4b191a14b0efdf8ea98d76fb5cc" /></td><td className="table-muted">ERC-4626 vault, NAV, journal</td></tr>
+        <tr><td className="asset-cell">PairRegistry</td><td>Arbitrum Sepolia</td><td><AddrLink base={EXPLORER.arbSepolia} address="0xb0ff214f3575098966c1dbf66bd39dca9ddc0130" /></td><td className="table-muted">Pair configs + limits</td></tr>
+        <tr><td className="asset-cell">HyperCoreHedger</td><td>HyperEVM testnet</td><td><AddrLink base={EXPLORER.hyperEvmTestnet} address="0xeeccd2bb5c0605f3eacdc4da221d9bdeda580d2f" /></td><td className="table-muted">On-chain CoreWriter short path</td></tr>
+        <tr><td className="asset-cell">mUSDG / mTSLA</td><td>Robinhood testnet</td><td><AddrLink base={EXPLORER.robinhoodTestnet} address="0xac0a7216290fa7445782f80628bf727b084e41e0" /></td><td className="table-muted">Mock quote token (mTSLA: 0xd441…3b2d)</td></tr>
+        <tr><td className="asset-cell">TestnetV4Router</td><td>Robinhood testnet</td><td><AddrLink base={EXPLORER.robinhoodTestnet} address="0xdc26a92c69df6fd4aa0d2f64fdec549bc655b7f6" /></td><td className="table-muted">Unlock-based V4 swaps</td></tr>
+      </tbody></table></div>
+      <p className="fine-print">Frontend ABIs in <span className="mono">src/lib/abis.ts</span> are generated from the compiled artifacts — all 100 function selectors verified present in the deployed bytecode. Live spot round trip ($5 each way, cost exactly 2× pool fee): <TxLink base={EXPLORER.robinhoodTestnet} hash="0xd112e0068b0caad2101311b139dbcc6709ce7330f0d32bac46e86b27a94ffc93" /> → <TxLink base={EXPLORER.robinhoodTestnet} hash="0xd7ae4a6372374c0a6ce6d2875fbe570554be9335e8704686121c3abacde7916d" />.</p>
+    </Panel>
+
+    {/* GUARDRAILS */}
+    <div className="section-title-row"><div><span className="section-kicker">GUARDRAILS</span><h2 className="display">Designed not to blow up first.</h2></div><span className="mono subdued">ENFORCED ON-CHAIN</span></div>
+    <div className="risk-grid">
+      {[['Deposit cap + pause','Capped deposits and a guardian pause that blocks entries and deployment but never exits.'],['NAV freshness bounds','Reports rejected if stale, too soon, or moving too far — stale NAV blocks deposits.'],['One direction only','Negative basis is logged, never traded: the token can&apos;t be shorted.'],['Sized to liquidity','Notional is the minimum of pair cap, pool-depth share, and book-depth share.']].map(([a, b]) => <Panel key={a}><span className="section-kicker">CONTROL</span><h3>{a}</h3><p>{b}</p></Panel>)}
+    </div>
+    <div className="risk-alert"><ShieldAlert size={19} /><div><strong>Unaudited and unproven.</strong><span>Contracts have no security review, mainnet is not deployed, and the strategy edge is unproven. Testnet only. Never deposit what you can&apos;t lose.</span></div></div>
+
+    {/* ROADMAP */}
+    <div className="section-title-row"><div><span className="section-kicker">ROADMAP</span><h2 className="display">What turns PIVOT into GO.</h2></div></div>
+    <div className="process-grid">
+      <div className="process-step"><span className="process-n">A</span><h3>Weekend measurement</h3><p>Run the sampler over a real weekend. If p90 net edge stays negative, the thesis is wrong and we say so.</p></div>
+      <div className="process-step"><span className="process-n">B</span><h3>Trust-minimized NAV</h3><p>Replace keeper attestation with proofs of positions both venues can verify.</p></div>
+      <div className="process-step"><span className="process-n">C</span><h3>Mainnet hardening</h3><p>Audit, multisig roles, funding-aware sizing, more pairs — then and only then, real capital.</p></div>
+    </div>
+
+    {/* FAQ */}
+    <div className="section-title-row"><div><span className="section-kicker">FAQ</span><h2 className="display">Asked, answered straight.</h2></div></div>
+    <Panel className="large-panel"><div className="faq-list">
+      <Faq q="Is Parity live with real money?" a="No. Testnets only: vault on Arbitrum Sepolia, hedger on HyperEVM testnet, mock market on Robinhood testnet. Mainnet addresses are intentionally unset in this interface." />
+      <Faq q="Is the strategy profitable?" a="Unproven. Weekday measurements on five real pairs came back net-negative after costs. The thesis is specifically about weekends, which have not been measured yet." />
+      <Faq q="Are the contracts audited?" a="No. 22 Foundry tests pass including fuzzing, but there is no security review. Treat everything as experimental." />
+      <Faq q="How do I verify your claims?" a="Every contract address on this page links to its explorer. ABIs in src/lib/abis.ts are generated from compiled artifacts with all selectors checked against live bytecode. Measurement CSVs ship in scripts/out/." />
+      <Faq q="What happens if a trade goes wrong?" a="The keeper unwinds both legs on convergence or timeout and journals the round trip. A mid-trade crash can leave legs open — the keeper has no persistence yet, listed openly in VERIFY_ME.md." />
+      <Faq q="Where is the code?" a="https://github.com/Chidubemkingsley/Parity — contracts, keeper scripts, measurement data, and this interface." />
+    </div></Panel>
+
+    {/* CTA */}
+    <Panel className="large-panel"><div className="panel-head"><div><span className="section-kicker">NEXT STEP</span><h2>Watch a market, read the record.</h2></div></div>
+      <div className="hero-actions"><Link href="/monitor" className="button button-primary">OPEN MARKET MONITOR <ArrowUpRight size={14} /></Link><a className="button button-quiet" href="https://github.com/Chidubemkingsley/Parity" target="_blank" rel="noreferrer">GITHUB REPO <ExternalLink size={14} /></a></div>
+      <p className="fine-print">Colosseum Crypto World&apos;s Fair — Arbitrum · Robinhood Chain · Hyperliquid tracks.</p>
+    </Panel>
   </div>;
 }
 
