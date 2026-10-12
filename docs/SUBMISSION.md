@@ -12,8 +12,11 @@ An ERC-4626 vault on Arbitrum funding a delta-neutral long-token / short-perp ba
 
 ## What works today
 - Vault, registry, hedger: compiled, 22 tests passing (incl. fuzz)
+- **Deployed on testnets** (see `docs/TESTNET.md`): vault + registry (Arbitrum Sepolia), hedger (HyperEVM testnet), mock V4 stock/USD market + swap router (Robinhood testnet)
+- **Live round-trip proof**: $5 dust buy+sell on Robinhood testnet, cost exactly 2× pool fee (txs in TESTNET.md)
 - Strategy math + risk checks: unit-tested
-- Scripts: token discovery, pool discovery, gap measurement, dry-run keeper
+- Scripts: token discovery, pool discovery, gap measurement, dry-run keeper — all run against live mainnet + testnet venues
+- Measured weekday gaps on 5 real pairs (all net-negative after costs; reports in `scripts/out/`)
 
 ## What is not proven
 - The edge: depends on `measure-gap` results
@@ -24,4 +27,4 @@ An ERC-4626 vault on Arbitrum funding a delta-neutral long-token / short-perp ba
 Arbitrum: the vault + settlement. Robinhood Chain: the tokenized-stock leg. Hyperliquid: the HIP-3 hedge and CoreWriter path.
 
 ## Links
-Repo: TODO · Demo video: TODO · Deployed addresses: TODO
+Repo: https://github.com/Chidubemkingsley/Parity · Demo video: TODO · Deployed addresses: `docs/TESTNET.md`
