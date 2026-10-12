@@ -688,3 +688,4 @@ button.wallet-state:disabled { cursor: not-allowed; opacity: .55; }
 .faq-q { display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 13px 4px; background: transparent; border: 0; color: #e0d9cf; cursor: pointer; font-size: 11px; font-weight: 600; text-align: left; }
 .faq-q:hover { color: #fff; }
 .faq-a { margin: 0 0 14px; padding: 0 4px; color: #99928a; font-size: 10px; line-height: 1.7; max-width: 72ch; }
+.link-list { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; margin: 10px 0; }
