@@ -301,6 +301,34 @@ export function useWithdrawData(wallet: `0x${string}` | undefined, amountStr: st
 
 export type PositionState = { shares: bigint; decimals: number; valueUsd: number | null };
 
+export type RiskParams = {
+  performanceFeeBps: bigint; maxDeployBps: bigint; maxNavMoveBps: bigint;
+  minReportInterval: bigint; maxNavAge: bigint; depositCap: bigint;
+  paused: boolean; navStale: boolean;
+};
+
+/** Enforced guardrail parameters, read live from the vault. */
+export function useRiskParams() {
+  return useQuery({
+    queryKey: ['risk-params', 'arb-sepolia'],
+    refetchInterval: 60000,
+    retry: 1,
+    queryFn: async (): Promise<RiskParams | null> => {
+      const dep = addressesByChainId[chainIds.arbitrumSepolia]?.vault;
+      if (!dep || !isContractConfigured(dep)) return null;
+      const v = dep.address;
+      const r = (fn: string) =>
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: fn } as never) as Promise<never>;
+      const [performanceFeeBps, maxDeployBps, maxNavMoveBps, minReportInterval, maxNavAge, depositCap, paused, navStale] =
+        (await Promise.all([
+          r('performanceFeeBps'), r('maxDeployBps'), r('maxNavMoveBps'), r('minReportInterval'),
+          r('maxNavAge'), r('depositCap'), r('paused'), r('navIsStale'),
+        ])) as unknown as [bigint, bigint, bigint, bigint, bigint, bigint, boolean, boolean];
+      return { performanceFeeBps, maxDeployBps, maxNavMoveBps, minReportInterval, maxNavAge, depositCap, paused, navStale };
+    },
+  });
+}
+
 const NAV_EVENT = parseAbi(['event DeployedReported(uint256 oldDeployed, uint256 newDeployed, bytes32 evidence, uint256 totalAssets)'])[0];
 
 export type NavReport = {
