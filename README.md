@@ -104,6 +104,37 @@ Deployer/keeper: `0x90356CF97B3BF1749A604d3F89b3DF3602A459E3` (all roles, testne
 
 Frontend ABIs (`Parity-frontend/src/lib/abis.ts`) are generated from the compiled artifacts — **all 100 function selectors verified present in the live deployed bytecode**. Addresses live in `Parity-frontend/src/lib/addresses.ts`.
 
+### Verified source + manual writes (Arbiscan)
+
+Vault and registry source is verified via Sourcify, so both Arbiscan pages expose Read/Write tabs — no scripts needed for admin/keeper calls. Connect the role-holding wallet (`0x9035…` holds all testnet roles) on **Arbitrum Sepolia**:
+
+- Vault `0xb0e660108571b4b191a14b0efdf8ea98d76fb5cc` → [write tab](https://sepolia.arbiscan.io/address/0xb0e660108571b4b191a14b0efdf8ea98d76fb5cc#writeContract)
+- Registry `0xb0ff214f3575098966c1dbf66bd39dca9ddc0130` → [write tab](https://sepolia.arbiscan.io/address/0xb0ff214f3575098966c1dbf66bd39dca9ddc0130#writeContract)
+
+Registering the mTSLA testnet pair (`upsertPair` on the registry):
+
+| Field | Value |
+|---|---|
+| `symbol` | `mTSLA` |
+| `stockToken` | `0xd4417bc34cd728a581b0e1dd03839c6e56fca5cf` |
+| `hlAsset` | `750001` (= 100000 + 65×10000 + 1; formula memory-derived, proven on first live short) |
+| `hlSzDecimals` | `3` |
+| `maxNotional` | `50000000` ($50, 6 decimals) |
+| `minEdgeBps` | `20` |
+| `enabled` | `true` |
+
+Journaling the executed $5 spot round trip (`recordRoundTrip` on the vault, keeper role; requires the pair above first or it reverts `UnknownPair`):
+
+| Field | Value |
+|---|---|
+| `pairId` | `0x85339a355bf1243cda4b91f055c35f9f8d1d5a6736946189a83f26ad2b33148b` (= keccak256("mTSLA")) |
+| `notional` | `5000000` |
+| `pnl` | `-29953` (measured −$0.029953 loss) |
+| `entryEdgeBps` | `0` |
+| `rhTx` | `0xd112e0068b0caad2101311b139dbcc6709ce7330f0d32bac46e86b27a94ffc93` (buy tx) |
+| `hlRef` | `0x75d3b1253b85d54bcdb0284f6d6432b09266e4a9f672528efaec7f4e79befc45` (= keccak("spot-only-plumbing-demo-oct12") — no HL leg, labeled) |
+| `openedAt` / `closedAt` | `1791816414` / `1791816427` (real block times of the two swaps) |
+
 ### Redeploying
 
 ```bash
