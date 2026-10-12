@@ -153,20 +153,25 @@ const WITHDRAW_EVENT = parseAbi(['event Withdraw(address indexed sender, address
 
 export type CostBasis = { deposits: bigint; withdrawals: bigint; net: bigint; txs: number } | null;
 
-/** Cost basis = lifetime USDC in − lifetime USDC out, scanned from vault logs. No indexer needed. */
-export function useCostBasis(wallet: `0x${string}` | undefined) {
+export type ActivityRow = {
+  blockNumber: bigint; timestamp: number; kind: 'deposit' | 'withdraw';
+  assets: bigint; shares: bigint; txHash: `0x${string}`;
+};
+
+/** Full per-wallet activity + totals, scanned from vault logs. No indexer needed. */
+export function useActivity(wallet: `0x${string}` | undefined) {
   return useQuery({
-    queryKey: ['cost-basis', 'arb-sepolia', wallet ?? 'disconnected'],
+    queryKey: ['activity', 'arb-sepolia', wallet ?? 'disconnected'],
     refetchInterval: 120000,
     retry: 1,
     enabled: !!wallet,
-    queryFn: async (): Promise<CostBasis> => {
+    queryFn: async (): Promise<{ rows: ActivityRow[]; decimals: number } | null> => {
       const dep = addressesByChainId[chainIds.arbitrumSepolia]?.vault;
       if (!dep || !isContractConfigured(dep) || !wallet) return null;
       const v = dep.address;
       const latest = await arbClient.getBlockNumber();
       const from = dep.deployBlock ?? latest;
-      let deposits = 0n, withdrawals = 0n, txs = 0;
+      const rows: ActivityRow[] = [];
       const STEP = 100000n;
       for (let s = from; s <= latest; s += STEP) {
         const e = s + STEP - 1n > latest ? latest : s + STEP - 1n;
@@ -174,12 +179,38 @@ export function useCostBasis(wallet: `0x${string}` | undefined) {
           arbClient.getLogs({ address: v, event: DEPOSIT_EVENT, args: { owner: wallet }, fromBlock: s, toBlock: e }),
           arbClient.getLogs({ address: v, event: WITHDRAW_EVENT, args: { owner: wallet }, fromBlock: s, toBlock: e }),
         ]);
-        for (const l of ds) { deposits += (l.args as unknown as { assets: bigint }).assets; txs++; }
-        for (const l of ws) { withdrawals += (l.args as unknown as { assets: bigint }).assets; txs++; }
+        for (const l of ds) {
+          const a = l.args as unknown as { assets: bigint; shares: bigint };
+          rows.push({ blockNumber: l.blockNumber, timestamp: 0, kind: 'deposit', assets: a.assets, shares: a.shares, txHash: l.transactionHash });
+        }
+        for (const l of ws) {
+          const a = l.args as unknown as { assets: bigint; shares: bigint };
+          rows.push({ blockNumber: l.blockNumber, timestamp: 0, kind: 'withdraw', assets: a.assets, shares: a.shares, txHash: l.transactionHash });
+        }
       }
-      return { deposits, withdrawals, net: deposits - withdrawals, txs };
+      const blocks = [...new Set(rows.map((r) => r.blockNumber))];
+      const stamps = await Promise.all(blocks.map(async (b) => [b, await arbClient.getBlock({ blockNumber: b })] as const));
+      const tmap = new Map(stamps.map(([b, blk]) => [b, Number(blk.timestamp)]));
+      for (const r of rows) r.timestamp = tmap.get(r.blockNumber) ?? 0;
+      rows.sort((a, b) => (b.blockNumber > a.blockNumber ? 1 : -1));
+      const dec = (await arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'decimals' })) as unknown as bigint;
+      return { rows, decimals: Number(dec) };
     },
   });
+}
+
+/** Cost basis = lifetime USDC in − lifetime USDC out, derived from scanned activity. */
+export function useCostBasis(wallet: `0x${string}` | undefined) {
+  const a = useActivity(wallet);
+  let basis: CostBasis | undefined;
+  if (a.data === undefined) basis = undefined;
+  else if (a.data === null) basis = null;
+  else {
+    const deposits = a.data.rows.filter((r) => r.kind === 'deposit').reduce((x, r) => x + r.assets, 0n);
+    const withdrawals = a.data.rows.filter((r) => r.kind === 'withdraw').reduce((x, r) => x + r.assets, 0n);
+    basis = { deposits, withdrawals, net: deposits - withdrawals, txs: a.data.rows.length };
+  }
+  return { ...a, data: basis };
 }
 
 export function usdcAddr(): `0x${string}` | null {
