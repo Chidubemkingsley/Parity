@@ -303,6 +303,43 @@ export function useWithdrawData(wallet: `0x${string}` | undefined, amountStr: st
 
 export type PositionState = { shares: bigint; decimals: number; valueUsd: number | null };
 
+export type AdminRoles = {
+  isAdmin: boolean; isGuardian: boolean; isKeeper: boolean; isRegistryOwner: boolean;
+};
+
+/** Role state for the connected wallet, read live from vault + registry. */
+export function useAdminRoles(wallet: `0x${string}` | undefined) {
+  return useQuery({
+    queryKey: ['admin-roles', 'arb-sepolia', wallet ?? 'disconnected'],
+    refetchInterval: 60000,
+    retry: 1,
+    enabled: !!wallet,
+    queryFn: async (): Promise<AdminRoles | null> => {
+      const vd = addressesByChainId[chainIds.arbitrumSepolia]?.vault;
+      const rd = addressesByChainId[chainIds.arbitrumSepolia]?.registry;
+      if (!vd || !isContractConfigured(vd) || !wallet) return null;
+      const v = vd.address;
+      const [gRole, kRole] = (await Promise.all([
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'GUARDIAN_ROLE' }),
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'KEEPER_ROLE' }),
+      ])) as unknown as [`0x${string}`, `0x${string}`];
+      const has = (role: `0x${string}`) =>
+        arbClient.readContract({ address: v, abi: ParityVaultAbi, functionName: 'hasRole', args: [role, wallet] }) as Promise<boolean>;
+      const [isAdmin, isGuardian, isKeeper] = await Promise.all([
+        has('0x0000000000000000000000000000000000000000000000000000000000000000'),
+        has(gRole),
+        has(kRole),
+      ]);
+      let isRegistryOwner = false;
+      if (rd && isContractConfigured(rd)) {
+        const o = (await arbClient.readContract({ address: rd.address, abi: PairRegistryAbi, functionName: 'owner' })) as unknown as string;
+        isRegistryOwner = o.toLowerCase() === wallet.toLowerCase();
+      }
+      return { isAdmin, isGuardian, isKeeper, isRegistryOwner };
+    },
+  });
+}
+
 export type RiskParams = {
   performanceFeeBps: bigint; maxDeployBps: bigint; maxNavMoveBps: bigint;
   minReportInterval: bigint; maxNavAge: bigint; depositCap: bigint;
