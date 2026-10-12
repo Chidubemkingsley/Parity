@@ -148,10 +148,8 @@ export function useTestnetTokenPrice() {
 
 export { hyperEvmTestnet, robinhoodTestnet };
 
-const ERC4626_EVENTS = parseAbi([
-  'event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares)',
-  'event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)',
-]);
+const DEPOSIT_EVENT = parseAbi(['event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares)'])[0];
+const WITHDRAW_EVENT = parseAbi(['event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)'])[0];
 
 export type CostBasis = { deposits: bigint; withdrawals: bigint; net: bigint; txs: number } | null;
 
@@ -173,8 +171,8 @@ export function useCostBasis(wallet: `0x${string}` | undefined) {
       for (let s = from; s <= latest; s += STEP) {
         const e = s + STEP - 1n > latest ? latest : s + STEP - 1n;
         const [ds, ws] = await Promise.all([
-          arbClient.getLogs({ address: v, events: [ERC4626_EVENTS[0]], args: { owner: wallet }, fromBlock: s, toBlock: e }),
-          arbClient.getLogs({ address: v, events: [ERC4626_EVENTS[1]], args: { owner: wallet }, fromBlock: s, toBlock: e }),
+          arbClient.getLogs({ address: v, event: DEPOSIT_EVENT, args: { owner: wallet }, fromBlock: s, toBlock: e }),
+          arbClient.getLogs({ address: v, event: WITHDRAW_EVENT, args: { owner: wallet }, fromBlock: s, toBlock: e }),
         ]);
         for (const l of ds) { deposits += (l.args as unknown as { assets: bigint }).assets; txs++; }
         for (const l of ws) { withdrawals += (l.args as unknown as { assets: bigint }).assets; txs++; }
